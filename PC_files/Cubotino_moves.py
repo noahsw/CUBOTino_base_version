@@ -1,7 +1,7 @@
 """
 #############################################################################################################
 # Andrea Favero April 2022
-# 
+#
 # From Kociemba solver to robot moves
 # This applies to "CUBOTino", a simpler (and much cheaper) Rubik's cube solver robot than my first one:
 # (https://www.youtube.com/watch?v=oYRXe4NyJqs)
@@ -12,7 +12,6 @@
 # On this simpler robot, the mechanical constraints (servo rotation limited to 180deg), suggests a different approach:
 #  - The face to be turned, according to the solver, will be adapted to reflect the side such face is located
 #  - This means a supposed R1 might change L1 if the left cube side is located on the right side at that moment in time
-# Amount of robot movements increases by about 85% because of these mechanical contraints
 #
 #
 # Possible moves with this robot
@@ -20,7 +19,19 @@
 # 2) Flips the complete cube ("F") by "moving" the Front face to Bottom face: Only positive values are possible
 # 3) Rotates the bottom layer ("R") while costraining the 2nd and 3rd layer.
 # 4) The order of S, F has to be strictly followed
-# 5) Example 'F1R1S3' means: 1x cube Flip, 1x (90deg) CW rotation of the 1st (Down) layer, 1x (90deg) CCW cube Spin 
+# 5) Example 'F1R1S3' means: 1x cube Flip, 1x (90deg) CW rotation of the 1st (Down) layer, 1x (90deg) CCW cube Spin
+#
+#
+# Optimized planner (replaces the original fixed lookup table):
+# The bottom servo has only three positions (CCW, home, CW), and both S and R moves step it by one position.
+# The original table forced the cube holder back to home after every solver move, which often required
+# extra flips (i.e. L1 = 'S3F3R1', with 3 flips) and extra "re-homing" spins.
+# Here the whole solution is planned at once, as a shortest path (Dijkstra) over the robot states:
+#   (solver move index, cube orientation, holder position, quarter turns done on the faces of that move)
+# The cost of each robot action is its duration with the default servo timings, so the
+# planner minimizes the solving time, not just the movements count.
+# Consecutive solver moves on opposite faces (i.e. 'U1 D2') commute, so they are planned as a single
+# group, letting the planner pick the cheapest order.
 #
 #
 # Note: If the cube status has been entered manually, or detected via a webcam apart from the robot,
@@ -29,212 +40,227 @@
 #############################################################################################################
 """
 
-# Global variables
-
-# Below dict has all the possible robot movements, related to the cube solver string
-moves_dict = {'U1':'F2R1S3', 'U2':'F2R1S3R1S3', 'U3':'F2S1R3',
-              'D1':'R1S3',   'D2':'R1S3R1S3',   'D3':'S1R3',
-              'F1':'F1R1S3', 'F2':'F1R1S3R1S3', 'F3':'F1S1R3',
-              'B1':'F3R1S3', 'B2':'F3R1S3R1S3', 'B3':'F3S1R3',
-              'L1':'S3F3R1', 'L2':'S3F3R1S3R1', 'L3':'S1F1R3',
-              'R1':'S3F1R1', 'R2':'S3F1R1S3R1', 'R3':'S1F3R3'}
+# Duration (ms) of each robot action, from the default servo timings in Cubotino_settings.txt
+# (multiples of 100ms: the planner works in 100ms units)
+FLIP_COST = 1600     # flipper up (800) + back down (800)
+SPIN_COST = 1100     # b_spin_time
+ROTATE_COST = 1900   # cover close (300) + b_rotate_time (1200) + b_rel_time (100) + cover open (300)
+ROTATE_AFTER_FLIP_COST = 1700   # after a flip the cover closes straight from the flip position (+100), and the
+                                # flip doesn't go back to open (-800 +800 already in FLIP_COST, -300 cover close)
 
 
-# Cube orientation at the start, later updated after every cube movement on the robot
-h_faces={'L':'L','F':'F','R':'R'}   # dict with faces around the bottom/upper positioned faces
-v_faces={'D':'D','F':'F','U':'U'}   # dict with faces around the left/right positioned faces
-"""     
-v_faces{}   _______       
-           |       |
-           | ['U'] |
-           |_______|     h_faces{}  _______ _______ _______ 
-           |       |               |       |       |       |
-           | ['F'] |               | ['L'] | ['F'] | ['R'] |
-           |_______|               |_______|_______|_______|
-           |       |
-           | ['D'] |
-           |_______|    
+# Cube orientation is a 6 chars string: the face located at the positions U, D, F, B, L, R (in this order)
+START_ORIENTATION = 'UDFBLR'
+"""
+               _______
+              |       |
+              | o[0]U |
+       _______|_______|_______ _______
+      |       |       |       |       |
+      | o[4]L | o[2]F | o[5]R | o[3]B |
+      |_______|_______|_______|_______|
+              |       |
+              | o[1]D |
+              |_______|
+"""
 
-by knowing 5 faces, the 6th (B face) is also known ;-)
-""" 
-
-
-
+def flip_effect(o):
+    """ Cube orientation after a single Flip: the Front face moves to the Bottom, L and R don't change."""
+    return o[3] + o[2] + o[0] + o[1] + o[4] + o[5]
 
 
-def starting_cube_orientation():
-    """ Defines the starting cube orientation, that has to be recalled in case the robot is operated multiple times in a single session."""
-    
-    global h_faces,v_faces 
-    
-    # Cube orientation at the start, later updated after every cube movement on the robot
-    h_faces={'L':'L','F':'F','R':'R'}   # dict with faces around the bottom/upper positioned faces
-    v_faces={'D':'D','F':'F','U':'U'}   # dict with faces around the left/right positioned faces
+def spinCW_effect(o):
+    """ Cube orientation after a single CW spin (S1): the Left face moves to the Front, U and D don't change."""
+    return o[0] + o[1] + o[4] + o[5] + o[3] + o[2]
 
 
-
+def spinCCW_effect(o):
+    """ Cube orientation after a single CCW spin (S3): the Right face moves to the Front, U and D don't change."""
+    return o[0] + o[1] + o[5] + o[4] + o[2] + o[3]
 
 
 
 
 def opp_face(face):
     """ This function returns the opposite face of the one in argument."""
-    
-    if face == 'F': return 'B'
-    elif face == 'B': return 'F'
-    elif face == 'U': return 'D'
-    elif face == 'D': return 'U'
-    elif face == 'R': return 'L'
-    elif face == 'L': return 'R'
-    else:
-        return 'Error'
+    return {'F':'B', 'B':'F', 'U':'D', 'D':'U', 'R':'L', 'L':'R'}.get(face, 'Error')
 
 
 
 
+def group_solution(solution):
+    """ Splits the solver string (spaces already removed) into groups of commuting moves.
+        Each group is a tuple of (face, quarter turns) pairs: a single move, or two moves on opposite faces."""
 
-
-def flip_effect(h_faces,v_faces):
-    """ Returns the cube faces orientation after a single Flip action; Only v_faces are affected
-        It applies a face shift of these faces, and updates the F face on the h_faces dict."""
-    
-    v_faces['D']=v_faces['F']
-    v_faces['F']=v_faces['U']
-    v_faces['U']=opp_face(v_faces['D'])
-    h_faces['F']=v_faces['F']
-
-
-
-
-
-
-def spinCCW_effect(h_faces,v_faces):
-    """ Returns the cube faces orientation after a single CCW spin action; Only h_faces are affected
-        It applies a face shiftof these faces, and updates the F face on the v_faces dict."""
-    
-    h_faces['L']=h_faces['F']
-    h_faces['F']=h_faces['R']
-    h_faces['R']=opp_face(h_faces['L'])
-    v_faces['F']=h_faces['F']
-       
+    moves = [(solution[i], int(solution[i+1]) % 4) for i in range(0, len(solution) - 1, 2)]
+    groups = []
+    i = 0
+    while i < len(moves):
+        if i + 1 < len(moves) and moves[i+1][0] == opp_face(moves[i][0]):
+            groups.append((moves[i], moves[i+1]))
+            i += 2
+        else:
+            groups.append((moves[i],))
+            i += 1
+    return groups
 
 
 
 
+def _build_orientation_tables():
+    """ Enumerates the 24 cube orientations, and tabulates the orientation index after a flip / CW spin / CCW spin,
+        and the face located at the bottom, for each orientation index."""
 
-def spinCW_effect(h_faces,v_faces):
-    """ Returns the cube faces orientation after a single CW spin action; Only h_faces are affected
-        It applies a face shiftof these faces, and updates the F face on the v_faces dict."""
-    
-    h_faces['R']=h_faces['F']
-    h_faces['F']=h_faces['L']
-    h_faces['L']=opp_face(h_faces['R'])
-    v_faces['F']=h_faces['F']
+    orients = [START_ORIENTATION]
+    index = {START_ORIENTATION: 0}
+    i = 0
+    while i < len(orients):
+        for effect in (flip_effect, spinCW_effect, spinCCW_effect):
+            o = effect(orients[i])
+            if o not in index:
+                index[o] = len(orients)
+                orients.append(o)
+        i += 1
+    flip = bytes([index[flip_effect(o)] for o in orients])
+    spin_cw = bytes([index[spinCW_effect(o)] for o in orients])
+    spin_ccw = bytes([index[spinCCW_effect(o)] for o in orients])
+    bottom = ''.join([o[1] for o in orients])
+    return flip, spin_cw, spin_ccw, bottom
 
+_FLIP, _SPIN_CW, _SPIN_CCW, _BOTTOM = _build_orientation_tables()
 
-
-
-
-
-def cube_orient_update(movement):
-    """ This function traks the cube orientation based on the applied movements by the robot.
-        Arguments is the applied robot movement.
-        The function uses the cube orientation global variables  "h_faces" and "v_faces"."""
-        
-    global h_faces,v_faces
-    
-    for i in range(len(movement)):                 # iterates over the string of robot movements
-        if movement[i] == 'F':                     # case there is a cube flip on robot movements
-            repeats=int(movement[i+1])             # retrieves how many flips
-            for j in range(repeats):               # iterates over the amount of flip
-                flip_effect(h_faces,v_faces)       # re-order the cube orientation on the robot due to the flip
-        
-        elif movement[i] == 'S':                   # case there is a cube spin on robot movements
-            repeats=int(movement[i+1])             # retrieves how many spin
-            if repeats=='3':                       # case the spin is CCW
-                spinCCW_effect(h_faces,v_faces)    # re-order the cube orientation on the robot due to the CCW spin
-            else:                                  # case the spin is CW
-                for j in range(repeats):           # iterates over the amount of spin
-                    spinCW_effect(h_faces,v_faces) # re-order the cube orientation on the robot due to the CW spin             
+# A robot state is s = orientation_index*3 + holder, with holder 0=CCW, 1=home, 2=CW
+_N_STATES = 72
+_START_STATE = 1                                  # starting orientation, holder at home
+_INF = 1000000
+# Robot actions of the search edges; a flip directly followed by a rotation is a single edge,
+# as it is cheaper than a flip followed by anything else (ROTATE_AFTER_FLIP_COST)
+_ACTIONS = ('F1', 'S1', 'S3', 'R1', 'R3', 'F1R1', 'F1R3')
 
 
 
 
+def _search(group, sources):
+    """ Dijkstra (bucket queue, so it is deterministic and cheap on MicroPython) within a single group of solver moves.
+        Search node u = state*P + progress, where progress counts the quarter turns done (mod 4) on each face of the group.
+        sources is a list of (cost, state) the search starts from.
+        Returns the cost, parent node, action and starting state of each node, plus the target progress."""
+
+    f_cost, s_cost, r_cost = FLIP_COST // 100, SPIN_COST // 100, ROTATE_COST // 100
+    fr_cost = (FLIP_COST + ROTATE_AFTER_FLIP_COST) // 100
+    P = 4 ** len(group)                           # number of progress values (4 or 16)
+    target = 0
+    for k in range(len(group)):
+        target += group[k][1] * 4 ** k
+
+    size = _N_STATES * P
+    dist = [_INF] * size
+    par = [-1] * size
+    act = bytearray(size)
+    orig = bytearray(size)
+    buckets = {}
+    for c, s in sources:
+        u = s * P
+        if c < dist[u]:
+            dist[u] = c
+            orig[u] = s
+            if c in buckets:
+                buckets[c].append(u)
+            else:
+                buckets[c] = [u]
+
+    c = min(buckets) if buckets else 0
+    while buckets:
+        nodes = buckets.pop(c, None)
+        if nodes:
+            for u in nodes:
+                if dist[u] != c:                  # node already reached with a lower cost
+                    continue
+                s, prog = divmod(u, P)
+                if prog == target:                # group done: this is an exit node
+                    continue
+                oi, h = divmod(s, 3)
+                oi_flip = _FLIP[oi]
+                steps = [(oi_flip * 3 + h, prog, 0, f_cost)]
+                if h < 2:
+                    steps.append((_SPIN_CW[oi] * 3 + h + 1, prog, 1, s_cost))
+                if h > 0:
+                    steps.append((_SPIN_CCW[oi] * 3 + h - 1, prog, 2, s_cost))
+                for k in range(len(group)):
+                    w = 4 ** k
+                    q = (prog // w) % 4
+                    for o2, a, cost in ((oi, 3, r_cost), (oi_flip, 5, fr_cost)):   # rotation, flip + rotation
+                        if _BOTTOM[o2] == group[k][0]:      # a face of this group is on the bottom
+                            if h < 2:
+                                steps.append((o2 * 3 + h + 1, prog + ((q + 1) % 4 - q) * w, a, cost))
+                            if h > 0:
+                                steps.append((o2 * 3 + h - 1, prog + ((q + 3) % 4 - q) * w, a + 1, cost))
+                for s2, prog2, a, step_cost in steps:
+                    u2 = s2 * P + prog2
+                    c2 = c + step_cost
+                    if c2 < dist[u2]:
+                        dist[u2] = c2
+                        par[u2] = u
+                        act[u2] = a
+                        orig[u2] = orig[u]
+                        if c2 in buckets:
+                            buckets[c2].append(u2)
+                        else:
+                            buckets[c2] = [u2]
+        c += 1
+    return dist, par, act, orig, P, target
 
 
-def adapt_move(move):
-    """ This function adapts the robot move after verifying on wich side the related face is located.
-        The solver considers the cube orientation to don't change, but on the robot it does.
-        This function will then swap the face name, instead to move the cube back on the original position
-        The function returns a dict with all the robot moves and the total amount."""
-    
-    global h_faces,v_faces
-    
-    face_to_turn = move[0]                        # face to be turned according to the solver 
-    rotations = move[1]                           # rotations (string) to be applied according to the solver 
-    
-    cube_orientation=h_faces.copy()               # generating a single cube orientation dict with h_faces
-    cube_orientation.update(v_faces)              # generating a single cube orientation dict with h_faces and v_faces
-    
-    solution_in_dict = True                       # boolean for easier code reading... 80% chances the face is in dict...
-    
-    for side, face in cube_orientation.items():   # iteration over the current cube orientation dict (5 sides)
-        if face == face_to_turn:                  # case the face to be turned is in the dictionary value
-            return side+rotations                 # the dictionary key is returned, as the effective face location
-        else:                                     # case the face to be turned is not in the dictionary value
-            solution_in_dict = False              # boolean variable is changed to False
-    
-    if solution_in_dict == False:                 # case the face to be turned is not in the dictionary value
-        return 'B'+rotations                      # the face to be turned must be the 6th one, the B side
+
+
+def plan_moves(groups):
+    """ Shortest (in time) sequence of robot actions executing all the groups of solver moves.
+        Forward pass: for each group, the cheapest cost (and the entry state it came from) to finish it in each state.
+        Backward pass: the actions within each group are re-generated from the chosen entry state.
+        Returns a list (one entry per group) of lists of robot actions, i.e. [['S1', 'F1', 'R1'], ...]."""
+
+    entry = [(0, _START_STATE)]
+    backs = []
+    for group in groups:
+        dist, par, act, orig, P, target = _search(group, entry)
+        back = bytearray(_N_STATES)
+        entry = []
+        for s in range(_N_STATES):
+            u = s * P + target
+            if dist[u] < _INF:
+                entry.append((dist[u], s))
+                back[s] = orig[u]
+        backs.append(back)
+
+    blocks = [[] for _ in groups]
+    if not groups:
+        return blocks
+    s_out = min(entry)[1]                         # cheapest final state
+    for g in range(len(groups) - 1, -1, -1):
+        s_in = backs[g][s_out]
+        dist, par, act, orig, P, target = _search(groups[g], [(0, s_in)])
+        u = s_out * P + target
+        while u != s_in * P:
+            a = _ACTIONS[act[u]]
+            for i in range(len(a) - 2, -1, -2):  # 'F1R1' is added as 'F1', 'R1'
+                blocks[g].insert(0, a[i:i+2])
+            u = par[u]
+        s_out = s_in
+    return blocks
 
 
 
 
+def join_actions(actions):
+    """ Joins a list of robot actions into the robot moves string, merging consecutive flips (i.e. F1F1 -> F2)."""
 
-
-def optimize_moves(moves):
-    """Removes unnecessary moves that would cancel each other out, to reduce solving moves and time
-    These movements are for instance a spin CW followed by a spin CCW, or viceversa."""
-    
-    optimization = False                 # boolean to track if optimizations are made
-    to_optmize=[]                        # empty list to be populated with string index where optimization is possible
-    str_length=len(moves)                # length of the robot move string
-    idx=0                                # index variable, of optimizable move string locations, to populate the list
-    for i in range(0,str_length,2):      # for loop of with steps = 2
-        
-        if moves[idx:idx+2]=='S1' and moves[idx+2:idx+4] =='S3':  # case S1 is folloved by S3
-#                 print(f'S1 followed by S3 at index {idx}')
-            optimization = True          # boolean to track optimization is set true
-            to_optmize.append(idx)       # list is populated with the index 
-            idx+=4                       # string index is increased by four, to skip the 2nd (already included) move  
-
-        elif moves[idx:idx+2]=='S3'and moves[idx+2:idx+4] =='S1': # case S3 is folloved by S1
-#                 print(f'S3 followed by S1 at index {idx}')
-            optimization = True          # boolean to track optimization is set true
-            to_optmize.append(idx)       # list is populated with the index 
-            idx+=4                       # string index is increased by four, to skip the 2nd (already included) move  
-
-        idx+=2                           # index variable is increased by two, to analayse next move
-        if idx>=str_length+2:            # case the index variable reaches the string end 
-            break                        # for loop is interrupted
-
-    if optimization == False:            # case the moves string had no need to be optimized
-        return moves                     # original moves are returned
-
-    else:                                # case the moves string has the need to be optimized
-        to_remove=[]                     # empty list to be populated with all indididual characters to be removed from the moves
-        for i in to_optmize:                        # iteration over the list of moves to be optimized
-            to_remove.append((i, i+1, i+2, i+3))    # list is populated with the 4 caracters of the 2 moves
-        
-        new_moves=''                                # empty string to hold the new robot moves 
-        remove = [item for sublist in to_remove for item in sublist] # list of characters is flattened
-        for i in range(str_length):                 # iteration over all the characters of original moves
-            if i not in remove:                     # case the index is not included in the list of those to be skipped
-                new_moves+=moves[i]                 # the character is added to the new string of moves 
-        
-        return new_moves                            # the new string of robot moves is returned
-
-
+    out = []
+    for a in actions:
+        if a == 'F1' and out and out[-1][0] == 'F':
+            out[-1] = 'F' + str(int(out[-1][1]) + 1)
+        else:
+            out.append(a)
+    return ''.join(out)
 
 
 
@@ -245,50 +271,33 @@ def count_moves(moves):
     robot_tot_moves = 0               # counter for all the robot movements
     for i in range(len(moves)):       # iterates over the string of robot movements
         if moves[i] == 'F':           # case there is a cube flip on robot movements
-            flips=int(moves[i+1])     # retrieves how many flips
-            robot_tot_moves+=flips    # increases the total amount of robot movements
-
-        elif moves[i] == 'R':         # case there is a layer rotation on robot movements
+            robot_tot_moves+=int(moves[i+1])   # increases the total amount of robot movements by the amount of flips
+        elif moves[i] == 'R' or moves[i] == 'S':   # case there is a layer rotation or a cube spin
             robot_tot_moves+=1        # increases by 1 (cannot be more) the total amount of robot movements
-        
-        elif moves[i] == 'S':         # case there is a cube spin on robot movements
-            robot_tot_moves+=1        # increases by 1 (cannot be more) the total amount of robot movements
-    
     return robot_tot_moves            # total amount of robot moves is returned
 
 
 
 
-
-
 def robot_required_moves(solution, solution_Text):
-    """ This function splits the cube manouvre from Kociemba solver string, and generates a dict with all the robot movements."""
-    
-    global h_faces,v_faces
-    
+    """ This function converts the cube manouvre from Kociemba solver string into the robot movements.
+        Returns a dict with the robot moves per solver move (or commuting pair of moves), the string
+        with all the robot moves, and the total amount of robot movements."""
+
     solution=solution.strip()                     # eventual empty spaces are removed from the string
     solution=solution.replace(" ", "")            # eventual empty spaces are removed from the string
-    starting_cube_orientation()                   # Cube orientation at the start, later updated after every cube movement on the robot
     robot={}                                      # empty dict to store all the robot moves
     moves=''                                      # empty string to store all the robot moves
     robot_tot_moves = 0                           # counter for all the robot movements
-    
+
     if solution_Text != 'Error':                  # case the solver did not return an error
-        blocks = int(round(len(solution)/2,0))    # total amount of blocks of movements (i.e. U2R1L3 are 3 blocks: U2, R1 and L1)
-        
-        # cube orientation and robot movement sequence selection
-        for block in range(blocks):               # iteration over blocks of movements
-            move=solution[:2]                     # move to be applied on this block, according to the solver
-            solution=solution[2:]                 # remaining movements from the solver are updated
-            adapted_move=adapt_move(move)         # the move from solver is adapted considering the real cube orientation
-            robot_seq=moves_dict[adapted_move]    # robot movement sequence is retrieved
-            robot[block]=robot_seq                # robot movements dict is updated
-            moves+=robot_seq                      # robot movements string is updated
-            cube_orient_update(robot_seq)         # cube orientation updated after the robot move from this block
-                           
-        moves=optimize_moves(moves)               # removes unnecessary moves (that would cancel each other out)
+        groups = group_solution(solution)         # solver moves, grouped when commuting (opposite faces)
+        blocks = plan_moves(groups)               # optimal robot actions per group
+        for block, actions in enumerate(blocks):
+            robot[block] = join_actions(actions)  # robot movements dict is updated
+        moves = join_actions([a for actions in blocks for a in actions])   # robot movements string
         robot_tot_moves = count_moves(moves)      # counter for the total amount of robot movements
-        
+
     return robot, moves, robot_tot_moves  # returns a dict with all the robot moves, string with all the moves and total robot movements
 
 

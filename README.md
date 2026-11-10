@@ -29,6 +29,11 @@ Video tutorial explaining how to present the cube to the webcam: https://youtu.b
 The movie is also available at /movies folder of this repo, and can be downloaded.<br /><br />
 
 
+# Running the tests:
+The robot moves planner (Cubotino_moves.py) has a regression test suite, needing only Python 3 (no extra packages). <br />
+From the repository folder: `python3 -m unittest discover -s tests` <br />
+The tests run each planned move string through an emulator of the ESP32 firmware on a simulated cube, and check the cube gets solved, the servos stay in range, and the robot is never slower than with the original moves table.
+
 # Searching for something more?
 In case you find this robot too simple, or you're interested to a self-enclosed version, then you can consider the CUBOTino Autonomous version:<br />
 - It reuses most of the parts from this Base version !!!<br />
