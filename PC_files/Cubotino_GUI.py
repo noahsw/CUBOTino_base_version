@@ -129,6 +129,7 @@ if not solver_found and not twophase_solver_found:    # case no one solver has b
 # python libraries, normally distributed with python
 import tkinter as tk                 # GUI library
 from tkinter import ttk              # GUI library
+from tkinter import font as tkfont  # GUI library, used to scale fonts with the window size
 import datetime as dt                # date and time library used as timestamp on a few situations (i.e. data log)
 import threading                     # threading library, to parallelize uart data 
 import time                          # time library is imported
@@ -341,7 +342,9 @@ def wrong_settings_feedback(fname):
 # ################################## global variables and constants ###################################################
 
 # width of a facelet in pixels, to draw the unfolded cube sketch
-width = 70                     # many other widgets and positions, are based to this variable
+BASE_WIDTH = 70                # facelet width at the GUI design size (scale 1.0)
+ui_scale = 1.0                 # current GUI scale factor, updated when the window is resized/maximized
+width = BASE_WIDTH             # many other widgets and positions, are based to this variable
 gap = width//8                 # graphical gap between faces (to increase the gap reduces the denominator)
 
 facelet_id = [[[0 for col in range(3)] for row in range(3)] for fc in range(6)]    # list for the facelets GUI id
@@ -456,9 +459,118 @@ def show_window(window):
     elif window==mainWindow:                   # case the request is to show the main windows          
         window.tkraise()                       # main windows is raised on top
         root.minsize(int(0.9*app_width), int(0.9*app_height))    # min GUI size, limiting the resizing on screen
-        root.maxsize(int(1.05*app_width), int(1.05*app_height))  # max GUI size, limiting the resizing on screen
+        root.maxsize(10000, 10000)             # no practical max size, so the GUI can be maximized (it scales up)
         root.resizable(True, True)             # allowing the root windows to be resizeable
         mainWindow_ontop=True                  # boolean of main windows being on top is set true
+        root.after_idle(rescale_to_window)     # GUI is re-scaled to the current window size
+
+
+
+
+
+
+def sc(value):
+    """Scale a GUI dimension (pixels or font points), from the design size, to the current GUI scale."""
+    return int(round(value * ui_scale))
+
+
+
+_base_fonts = {}   # dict with the original font (family, size, weight) of each widget, keyed by widget path
+
+def scale_widget_fonts(widget):
+    """Scale the font of the widget, and of all its children, to the current GUI scale."""
+    try:
+        key = str(widget)
+        if key not in _base_fonts:                                  # first time: the original font is stored
+            f = tkfont.Font(root=root, font=widget.cget("font")).actual()
+            _base_fonts[key] = (f["family"], f["size"], f["weight"])
+        family, size, weight = _base_fonts[key]
+        new_size = int(round(size * ui_scale)) or (1 if size > 0 else -1)
+        widget.configure(font=(family, new_size, weight))
+    except tk.TclError:                                             # case the widget has no font option
+        pass
+    for child in widget.winfo_children():
+        scale_widget_fonts(child)
+
+
+
+def place_text_window():
+    """Position and size the text window (and its font) as per the current GUI scale."""
+    text_font.configure(size=sc(BASE_TEXT_SIZE))
+    gui_text_window.place(x=sc(20)+6*width+sc(10)+2*gap, y=sc(20), height=3*width-sc(10), width=6*width-sc(10))
+
+
+
+def apply_ui_scale(scale):
+    """Re-draw the main window at a new scale factor, keeping the cube sketch colors and color picking selection."""
+    
+    global ui_scale, width, gap, curcol
+    
+    # current state of the cube sketch and of the color picking palette is retrieved
+    fills = [[[gui_canvas.itemcget(facelet_id[f][r][c], "fill") for c in range(3)] for r in range(3)] for f in range(6)]
+    picked = 0
+    for i in range(6):
+        if gui_canvas.itemcget(colorpick_id[i], "outline") == "Grey55":
+            picked = i
+    current_color = curcol
+    
+    ui_scale = scale
+    width = sc(BASE_WIDTH)                       # facelet width at the new scale
+    gap = width//8                               # gap between faces at the new scale
+    
+    canvas_w, canvas_h = 12*width+3*gap+sc(20), 9*width+2*gap+sc(40)
+    gui_f1.configure(width=canvas_w, height=canvas_h)
+    gui_canvas.configure(width=canvas_w, height=canvas_h)
+    gui_canvas.delete("all")                     # cube sketch and palette are re-drawn from scratch
+    gui_canvas2.configure(width=sc(200), height=sc(200))
+    
+    create_facelet_rects(width)
+    for f in range(6):
+        for r in range(3):
+            for c in range(3):
+                gui_canvas.itemconfig(facelet_id[f][r][c], fill=fills[f][r][c])
+    create_colorpick(width)
+    for i in range(6):
+        if i == picked:
+            gui_canvas.itemconfig(colorpick_id[i], width=max(2, sc(5)), outline="Grey55")
+        else:
+            gui_canvas.itemconfig(colorpick_id[i], width=sc(20), outline="#F0F0F0")
+    curcol = current_color
+    draw_cubotino_center_colors()
+    
+    place_text_window()
+    scale_widget_fonts(gui_f2)                   # buttons, labels, etc on the right side
+    gui_prog_bar.configure(length=sc(175))
+
+
+
+_rescale_job = None   # pending tkinter 'after' job, to debounce the re-scaling while resizing
+
+def on_root_configure(event):
+    """Called on window resize: schedules a GUI re-scale."""
+    global _rescale_job
+    if event.widget is not root or not mainWindow_ontop:
+        return
+    if _rescale_job is not None:
+        root.after_cancel(_rescale_job)
+    _rescale_job = root.after(150, rescale_to_window)
+
+
+
+def rescale_to_window():
+    """Scale the main window content to fit the current window size."""
+    global _rescale_job
+    _rescale_job = None
+    if not mainWindow_ontop:
+        return
+    w, h = root.winfo_width(), root.winfo_height()
+    if w <= 1 or h <= 1:                         # window not yet drawn
+        return
+    scale = min(w / app_width, h / app_height)
+    scale = max(0.9, min(scale, 4.0))
+    scale = round(scale * 20) / 20               # 5% steps, to avoid re-drawing for tiny size changes
+    if abs(scale - ui_scale) > 0.001:
+        apply_ui_scale(scale)
 
 
 
@@ -483,9 +595,9 @@ def create_facelet_rects(a):
     
     for f in range(6):                                   # iteration over the six cube faces
         for row in range(3):                             # iteration over three rows, of cube facelests per face
-            y = 20 + offset[f][1] * 3 * a + row * a + offset[f][1]*gap      # top left y coordinate to draw a rectangule
+            y = sc(20) + offset[f][1] * 3 * a + row * a + offset[f][1]*gap  # top left y coordinate to draw a rectangule
             for col in range(3):                         # iteration over three columns, of cube facelests per face
-                x = 20 + offset[f][0] * 3 * a + col * a + offset[f][0]*gap  # top left x coordinate to draw a rectangule
+                x = sc(20) + offset[f][0] * 3 * a + col * a + offset[f][0]*gap  # top left x coordinate to draw a rectangule
                 
                 # the list of graphichal facelets (global variable) is populated, and initially filled in grey color
                 facelet_id[f][row][col] = gui_canvas.create_rectangle(x, y, x + a, y + a, fill="grey65", width=2)
@@ -506,11 +618,11 @@ def face_letters(a):
     
     offset = ((1, 0), (2, 1), (1, 1), (1, 2), (0, 1), (3, 1))  # coordinates (in cube face units) for cube faces position
     for f in range(6):                                         # iteration over the six cube faces
-        y = 20 + offset[f][1] * 3 * a + a + offset[f][1]*gap   # y coordinate for text placement
-        x = 20 + offset[f][0] * 3 * a + a + offset[f][0]*gap   # x coordinate for text placement
+        y = sc(20) + offset[f][1] * 3 * a + a + offset[f][1]*gap   # y coordinate for text placement
+        x = sc(20) + offset[f][0] * 3 * a + a + offset[f][0]*gap   # x coordinate for text placement
         
         # each of the URFDLB letters are placed on the proper cuvbe face
-        faceletter_id[f]=gui_canvas.create_text(x + width // 2, y + width // 2, font=("", 18), text=t[f], fill="black")
+        faceletter_id[f]=gui_canvas.create_text(x + a // 2, y + a // 2, font=("", sc(18)), text=t[f], fill="black")
 
 
 
@@ -520,23 +632,28 @@ def face_letters(a):
 def create_colorpick(a):
     """Initialize the "paintbox" on the canvas."""
     
-    global curcol, cols
+    global curcol, cols, colorpick_label
     
+    try:
+        colorpick_label.destroy()                        # previous label (if any) is removed, i.e. when re-scaling
+    except NameError:
+        pass
     cp = tk.Label(gui_canvas, text="color picking")      # gui text label informing the color picking concept
-    cp.config(font=("Arial", 18))                        # gui text font is set
+    cp.config(font=("Arial", sc(18)))                    # gui text font is set
+    colorpick_label = cp
     
     # gui text label for color picking info is placed on the canvas
     hp_window = gui_canvas.create_window(2*gap+int(8.25 * width), 2*gap+int(6.45 * width), anchor="nw", window=cp)
     
     for i in range(6):                                   # iteration over the six cube faces
-        x = 2*gap + int((i % 3) * (a + 15) + 7.65 * a)   # x coordinate for a color palette widget
-        y = 2*gap + int((i // 3) * (a + 15) + 7 * a)     # y coordinate for a color palette widget
+        x = 2*gap + int((i % 3) * (a + sc(15)) + 7.65 * a)   # x coordinate for a color palette widget
+        y = 2*gap + int((i // 3) * (a + sc(15)) + 7 * a)     # y coordinate for a color palette widget
         
         # round widget, filled with color as per cols variable, and with tick border (20) of same gui background color
-        colorpick_id[i] = gui_canvas.create_oval(x, y, x + a, y + a, fill=cols[i], width=20, outline="#F0F0F0")
+        colorpick_id[i] = gui_canvas.create_oval(x, y, x + a, y + a, fill=cols[i], width=sc(20), outline="#F0F0F0")
         
         # the first widget is modified by reducing the border width and changing the borger color to a different gray
-        gui_canvas.itemconfig(colorpick_id[0], width=5, outline="Grey55" ) 
+        gui_canvas.itemconfig(colorpick_id[0], width=max(2, sc(5)), outline="Grey55" ) 
         curcol = cols[0]    # the first color of cols tupple is assigned to the (global) current color variable
 
 
@@ -551,6 +668,7 @@ def draw_cubotino():
         Graphical widgets are all hard coded, and all referring to a single starting "(s) coordinate."""
     
     s= 5,5      # starting point coordinates to the gui_canvas2 origin
+    gui_canvas2.delete("all")   # previous sketch is removed (i.e. when re-scaling)
   
     # Cubotino frame
     # tuple with three tuples, holding the coordinated for the three Cubotino frame panels 
@@ -588,7 +706,8 @@ def draw_cubotino():
     
     for i in range(len(fclt_lines_pts)):   # iteration over the tuple with coordinates for facelets lines
         gui_canvas2.create_line(fclt_lines_pts[i], width=thck)   # lines are drawn
-        
+    
+    gui_canvas2.scale("all", 0, 0, ui_scale, ui_scale)   # sketch is scaled to the current GUI scale
     draw_cubotino_center_colors() # draw the cube center facelets with related colors
 
 
@@ -611,7 +730,8 @@ def draw_cubotino_center_colors():
     
     for i in range(3):  # iteration over the three tuples, for the center facelets of Cubotino sketch
         # Cube center faces colored on Cubotino
-        gui_canvas2.create_polygon(fclt_pts[i], outline = "black", fill = fclt_col[i], width = 1) 
+        pid = gui_canvas2.create_polygon(fclt_pts[i], outline = "black", fill = fclt_col[i], width = 1) 
+        gui_canvas2.scale(pid, 0, 0, ui_scale, ui_scale)   # center facelet is scaled to the current GUI scale
 
 
 
@@ -886,10 +1006,10 @@ def click(event):
             curcol = gui_canvas.itemcget("current", "fill")  # color selected at picking palette assigned "current color"
             for i in range(6):                               # iteration over all the six color picking palette widgets
                 # the circle widget is set to thick border with same color of the GUI background
-                gui_canvas.itemconfig(colorpick_id[i], width=20, outline="#F0F0F0")
+                gui_canvas.itemconfig(colorpick_id[i], width=sc(20), outline="#F0F0F0")
             
             # the selected circle widget gets thinner borger, colored with a visible gray color
-            gui_canvas.itemconfig("current", width=5, fill=curcol, outline="Grey55")
+            gui_canvas.itemconfig("current", width=max(2, sc(5)), fill=curcol, outline="Grey55")
         
         elif idlist[0] not in faceletter_id:                 # case the widget is not one of the six color picking palette
             gui_canvas.itemconfig("current", fill=curcol)    # that widget is filled with the "current color"
@@ -1534,6 +1654,7 @@ def update_coms():
     b_drop_COM = tk.OptionMenu(gui_robot_label, clicked_com, *coms, command=connect_check) # populated drop down menu
     b_drop_COM.config(width=7, font=("Arial", "10"))        # drop down menu settings
     b_drop_COM.grid(column=0, row=8, sticky="e", padx=10)   # drop down menu settings
+    scale_widget_fonts(b_drop_COM)                          # drop down font follows the current GUI scale
     connect_check(0)                                        # updates the button Connect status
     gui_robot_btn_update()                                  # updates the cube related buttons status
 
@@ -2176,8 +2297,11 @@ root.bind("<MouseWheel>", scroll)             # scrol up of the mouse wheel call
 # ############################### Main windows widget ##################################################################
 
 # gui text windows for feedback messages
-gui_text_window = tk.Text(gui_canvas,highlightthickness=0)
-gui_text_window.place(x=20+6*width+10+2*gap, y=20, height=3*width-10, width=6*width-10)
+text_font = tkfont.nametofont("TkFixedFont").copy()         # monospace font for the text window
+BASE_TEXT_SIZE = max(13, abs(text_font.actual("size")))     # text window font size at scale 1.0
+text_font.configure(size=BASE_TEXT_SIZE)
+gui_text_window = tk.Text(gui_canvas, highlightthickness=0, font=text_font, wrap="word", padx=6, pady=4)
+place_text_window()
 
 
 # cube status and solve buttons
@@ -2541,6 +2665,7 @@ create_facelet_rects(width)                       # calls the function to genera
 create_colorpick(width)                           # calls the function to generate the color-picking palette
 update_coms()                                     # calls the function to generate the cube sketch
 root.protocol("WM_DELETE_WINDOW", close_window)   # the function close_function is called when the windows is closed
+root.bind("<Configure>", on_root_configure)       # GUI re-scales when the window is resized or maximized
 root.mainloop()                                   # tkinter main loop
 
 ########################################################################################################################
