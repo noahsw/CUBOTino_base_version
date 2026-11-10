@@ -29,6 +29,7 @@ import cv2
 import numpy as np
 import math
 import statistics
+import itertools
 import time
 import datetime as dt
 
@@ -77,7 +78,8 @@ def webcam(cam_num, cam_width=640, cam_height=360):
     global camera
     
     cam_num=int(cam_num)          # cam_num =0 is typically the one integrated on laptops
-    camera = cv2.VideoCapture(cam_num, cv2.CAP_DSHOW)         # camera object
+    backends = {'Windows': cv2.CAP_DSHOW, 'Darwin': cv2.CAP_AVFOUNDATION}  # camera backends specific to the OS
+    camera = cv2.VideoCapture(cam_num, backends.get(platform.system(), cv2.CAP_ANY))  # camera object (CAP_ANY: OpenCV picks)
   
     camera_width_resolution = int(cam_width)                  # laptop camera, width resolution setting
     camera_height_resolution = int(cam_height)                # laptop camera, height resolution setting
@@ -501,6 +503,30 @@ def estimate_facelets(facelets, angle):
 
 
 
+# name and BGR color of each side's center, according to the Western color scheme
+SIDE_COLORS = {'U':('WHITE',(255,255,255)), 'R':('RED',(0,0,204)), 'F':('GREEN',(0,132,0)),
+               'D':('YELLOW',(0,245,245)), 'L':('ORANGE',(0,128,255)), 'B':('BLUE',(204,0,0))}
+
+# per each side to read (1 to 6): the sides at the webcam, on top, and at the right of the image
+SIDE_VIEWS = {1:'UBR', 2:'RUB', 3:'FUR', 4:'DFR', 5:'LUF', 6:'BUL'}
+
+
+def holding_info(side):
+    ''' Returns the (name, BGR color) of the cube sides facing the webcam, on top, and at the right of the image.'''
+
+    return tuple(SIDE_COLORS[letter] for letter in SIDE_VIEWS[side])
+
+
+def put_prompt(frame, text, w):
+    ''' Writes the guidance text on the frame top band, reducing the font when needed to fit the frame width.'''
+
+    scale = fontScale*1.2                                     # default font scale for the text
+    text_width = cv2.getTextSize(text, font, scale, lineType)[0][0]  # text width with the default font scale
+    if text_width > w-20:                                     # case the text would exceed the frame width
+        scale = scale*(w-20)/text_width                       # font scale is reduced to fit
+    cv2.putText(frame, text, (10, 30), font, scale, fontColor, lineType)
+
+
 def read_facelets(det_face_time, delay, proceed):
     ''' Function that uses cv2 to retrieve contours, from an image (called frame in this case)
     Contours are searched on the 'eroded edges' frame copy
@@ -513,16 +539,18 @@ def read_facelets(det_face_time, delay, proceed):
     background_h prevents searching for contours on the top text bandwidth.'''
     
     wait_time = int(delay-(time.time() - det_face_time)) + 1
+    front, top, _ = holding_info(side)              # sides to have facing the webcam and on top
+    guidance = f'{side}/6: {front[0]} facing webcam, {top[0]} on top'  # guidance on how to hold the cube
     
     if wait_time > 0 and not proceed:
         # informative text is added on frame top, as guidance and for decoration purpose
-        cv2.putText(frame, str(f'Prepare side {sides[side]}, reading in {wait_time} s'), (10, 30), font, fontScale*1.2,fontColor,lineType)
+        put_prompt(frame, f'{guidance} - reading in {wait_time} s', w)
 
         # informative text is added on frame bottom, as guidance
         cv2.putText(frame, str('ESC to escape, spacebar to proceed'), (10, int(h-12)), font, fontScale*1.2,fontColor,lineType)
     else:
         # informative text is added on frame top, as guidance and for decoration purpose
-        cv2.putText(frame, str(f'Reading side {sides[side]}'), (10, 30), font, fontScale*1.2,fontColor,lineType)
+        put_prompt(frame, f'{guidance} - hold still', w)
 
         # informative text is added on frame bottom, as guidance
         cv2.putText(frame, str('ESC to escape'), (10, int(h-12)), font, fontScale*1.2,fontColor,lineType)
@@ -874,35 +902,36 @@ def inner_square_points(square_dict,i,edge):
 
 
 def cube_centers_color_ref(frame):
-    ''' It suggests the faces (center) color as guidance on screen, to present the right cube face to the camera.
-    This function fills the center facelets with refence color.'''
+    ''' It suggests how to hold the cube while presenting the current side to the webcam.
+    The sketch is the cube as seen by the webcam, with the colors of the Western color scheme (the most common one).'''
 
-    x_start=int(edge/3)
-    y_start=int(edge*6)
-    square_start_pt, square_dict = cube_sketch_coordinates(x_start,y_start, edge)
-    d = edge           # edge lebght for each facelet reppresentation
-    m = int(edge/6)    # m=margin around the cube reppresentation
+    if side not in SIDE_VIEWS:                      # case there isn't a side to present to the webcam
+        return
 
-    cv2.rectangle(frame, (x_start-m, y_start-2*edge), (x_start+13*d, int(y_start+9.2*d)), (230,230,230), -1) #gray background
-    cv2.putText(frame, 'Reference:', (x_start, y_start-int(0.5*d)), font, fontScale*0.85,(0,0,0),lineType)
+    (_, front), (_, top), (_, right) = holding_info(side)  # colors of the faces at front, top and right of the sketch
+    x_start = int(edge/3)                           # left limit of the panel
+    y_start = int(edge*4)                           # top limit of the panel
+    black = (0, 0, 0)
 
-    for point in square_start_pt:
-        cv2.rectangle(frame, tuple(point), (point[0]+edge, point[1]+edge), (0, 0, 0), 1)
+    cv2.rectangle(frame, (x_start-2, y_start), (x_start+13*edge, y_start+11*edge), (230,230,230), -1) # gray background
+    cv2.putText(frame, 'Hold the cube:', (x_start+4, y_start+21), font, fontScale*0.7, black, lineType)
 
-    # color definition in BGR per each of the 6 centers
-    center_facelets={4:(255,255,255), 13:(0,0,204), 22:(0,132,0), 31:(0,245,245), 40:(0,128,255), 49:(204,0,0)}
-    center_facelet_colors= {4:'white', 13:'red', 22:'green', 31:'yellow', 40:'orange',  49:'blu'}
-    fcs_ltrs= {4:'U',13:'R',22:'F',31:'D',40:'L',49:'B'}
+    size, dx, dy = 54, 26, 20                       # front face size, and offset of the cube depth on the sketch
+    x, y = x_start+40, y_start+50                   # top left corner of the front face on the sketch
 
+    faces = [(front, (x, y), (x+size, y), (x, y+size)),                # front face: origin, end of its two axes
+             (top, (x+dx, y-dy), (x+size+dx, y-dy), (x, y)),           # top face
+             (right, (x+size, y), (x+size+dx, y-dy), (x+size, y+size))]  # right face
 
-    for key, bgr_color in center_facelets.items():
-        points=inner_square_points(square_dict,key,edge)  # coordinates for the center facelet on the iterator
-        color= bgr_color                                  # BGR color is returned
-        cv2.fillPoly(frame, pts = [points], color=color)  # facelet is fille with the BGR color for tha center
-        
-        x=int(square_start_pt[key][0]-0.7*d)
-        y=int(square_start_pt[key][1]+1.7*d)
-        cv2.putText(frame, fcs_ltrs[key], (x,y), font, fontScale*1.8,(0,0,0),lineType)
+    for color, origin, end_u, end_v in faces:
+        o, u, v = np.array(origin), np.array(end_u)-origin, np.array(end_v)-origin
+        cv2.fillPoly(frame, [np.array([o, o+u, o+u+v, o+v], dtype=np.int32)], color)
+        for i in range(4):                          # the 3x3 grid lines of the face
+            cv2.line(frame, tuple(int(c) for c in o+u*i//3), tuple(int(c) for c in o+u*i//3+v), black, 1)
+            cv2.line(frame, tuple(int(c) for c in o+v*i//3), tuple(int(c) for c in o+v*i//3+u), black, 1)
+
+    cv2.putText(frame, f'Webcam sees: {holding_info(side)[0][0]}', (x_start+4, y_start+126), font, fontScale*0.55, black, 1)
+    cv2.putText(frame, f'On top: {holding_info(side)[1][0]}', (x_start+4, y_start+147), font, fontScale*0.55, black, 1)
 
 
 
@@ -1296,15 +1325,23 @@ def cube_colors_interpreted_HSV(BGR_detected, HSV_detected):
                         H=0                                         # Hue is force to 0
                     if Hc>red_blue_avg:                             # Red center Hue (when the center facelet is above mid distance between Red center and Blue )
                         Hc=0                                        # Red center Hue is forced to 0
-                    dist=min(abs((H-Hc)),180-Hc+H)                  # red can either be 170<Hue<180 as well as <10
+                    dist=min(abs(H-Hc),180-abs(H-Hc))                 # red can either be 170<Hue<180 as well as <10
                     Hdistance.append(dist)                          # absolute Hue distance toward the 5 colored centers Hue
             else:                                                   # else case is when all the 6 red's facelts Hue are above mid Hue distance blue / red
                 for Hc in Hcenters:                                 # iteration over the 5 reference Hue colors
-                    dist=min(abs((H-Hc)),180-Hc+H)                  # red can either be 170<Hue<180 as well as <10
+                    dist=min(abs(H-Hc),180-abs(H-Hc))                 # red can either be 170<Hue<180 as well as <10
                     Hdistance.append(dist)                          # absolute Hue distance toward the 5 colored centers Hue
 
             color=cube_color_sequence_no_white[Hdistance.index(min(Hdistance))] # right color has min distance from center facelet of same color
             color_facelets[facelet]=color                                       # color is assigned to dictionary
+
+        # red and orange Hue can be very close (i.e. stickerless cubes), while red is clearly darker: facelets read as red or
+        # orange are therefore re-assigned by their Lab color distance from the red and orange centers
+        lab=cv2.cvtColor(np.array([BGR_detected], dtype=np.uint8), cv2.COLOR_BGR2LAB)[0].astype(float)   # Lab color of all facelets
+        lab_ref={c: lab[colored_centers[cube_color_sequence_no_white.index(c)]] for c in ('red', 'orange')} # Lab of red and orange centers
+        for facelet, color in color_facelets.items():                       # iteration on all the color facelets
+            if color in lab_ref:                                            # case the facelet was read as red or orange
+                color_facelets[facelet]=min(lab_ref, key=lambda c: np.linalg.norm(lab[facelet]-lab_ref[c]))  # closest of the two
 
 
         # Merging the white and color facelets dictionaries, and sorting it by key
@@ -1654,6 +1691,64 @@ def cube_solution(cube_string):
         solution_Text = 'Error'       # in that case a short error string is returned
     
     return solution, solution_Text
+
+
+
+
+
+
+
+def correct_face_rotation(cube_status):
+    ''' Checks if an incoherent cube status is due to cube faces presented to the webcam with the wrong rotation.
+    A rotated face keeps its colors, therefore all the combinations of the quarter turns of the 6 faces are verified.
+    Returns the corrected cube status and the quarter turns applied to each face (URFDLB order).
+    Returns (None, None) unless exactly one coherent cube exists, as guessing could lead to a wrong solution.'''
+
+    colors = list(cube_status.values())       # colors of the 54 facelets, in kociemba order
+    if len(colors) != 54 or len(set(colors)) != 6 or any(colors.count(color) != 9 for color in set(colors)):
+        return None, None                     # wrong colors can't be fixed by rotating the faces
+
+    clockwise = (6, 3, 0, 7, 4, 1, 8, 5, 2)   # facelets position after a clockwise quarter turn of a face
+    face_turns = []                           # list with the 4 possible rotations of each of the 6 faces
+    for i in range(6):
+        stickers = colors[9*i : 9*i+9]        # the 9 facelets of the face
+        rotations = []                        # list with the 4 rotations of this face
+        for _ in range(4):
+            rotations.append(stickers)
+            stickers = [stickers[j] for j in clockwise]
+        face_turns.append(rotations)
+
+    coherent = {}                             # dict of the coherent cube strings found
+    for turns in itertools.product(range(4), repeat=6):
+        candidate = [color for i, turn in enumerate(turns) for color in face_turns[i][turn]]
+        string = cube_string(dict(enumerate(candidate)))
+        facelet_cube = sv.face.FaceCube()
+        if facelet_cube.from_string(string) == sv.cubie.CUBE_OK and facelet_cube.to_cubie_cube().verify() == sv.cubie.CUBE_OK:
+            coherent.setdefault(string, (dict(enumerate(candidate)), turns))
+
+    if len(coherent) != 1:                    # none, or more than one, coherent cube status
+        return None, None
+    return next(iter(coherent.values()))
+
+
+
+
+
+
+
+def solve_or_correct(cube_status, status_string):
+    ''' Calls the solver and, in case of incoherent cube status, checks whether a face was presented with the wrong rotation.
+    Returns the cube status, its string, the solution and the solution text (the corrected ones, if a correction is found).'''
+
+    solution, solution_Text = cube_solution(status_string)
+    if solution_Text == 'Error':
+        corrected, turns = correct_face_rotation(cube_status)
+        if corrected is not None:
+            cube_status, status_string = corrected, cube_string(corrected)
+            solution, solution_Text = cube_solution(status_string)
+            applied = [f'{side} {turn*90}deg' for side, turn in zip('URFDLB', turns) if turn]
+            print(f'Cube face presented with the wrong rotation, corrected (clockwise): {", ".join(applied)}')
+    return cube_status, status_string, solution, solution_Text
 
 
 
@@ -2190,7 +2285,7 @@ def cubeAF():
                         cube_status, HSV_detected, cube_color_sequence = cube_colors_interpreted(kociemba_facelets_BGR_mean)
                         
                         cube_status_string = cube_string(cube_status)  # cube string for the solver
-                        solution, solution_Text = cube_solution(cube_status_string)   # Kociemba solver is called to have the solution string
+                        cube_status, cube_status_string, solution, solution_Text = solve_or_correct(cube_status, cube_status_string)   # Kociemba solver is called to have the solution string
                         color_detection_winner='BGR'      # variable used to log which method gave the solution
                         
                         if debug:                         # case the debug variable is set True
@@ -2204,7 +2299,7 @@ def cubeAF():
                             cube_status, cube_status_HSV, cube_color_sequence = cube_colors_interpreted_HSV(kociemba_facelets_BGR_mean,HSV_detected)
                             
                             cube_status_string = cube_string(cube_status)  # cube string for the solver
-                            solution, solution_Text = cube_solution(cube_status_string)   # Kociemba solver is called to have the solution string
+                            cube_status, cube_status_string, solution, solution_Text = solve_or_correct(cube_status, cube_status_string)   # Kociemba solver is called to have the solution string
                             color_detection_winner='HSV'            # variable used to log which method give the solution
                             
                             if solution_Text == 'Error':            # in case color color detection fail also with HSV approach
