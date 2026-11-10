@@ -1382,6 +1382,133 @@ def cube_colors_interpreted_HSV(BGR_detected, HSV_detected):
 
 
 
+def balanced_assignment(cost):
+    ''' Hungarian algorithm: assigns each row to a different column, with the minimum total cost.
+    Argument is a square cost matrix (list of lists). Returns the list of the column assigned to each row.'''
+    
+    n = len(cost)
+    INF = float('inf')
+    u = [0.0]*(n+1); v = [0.0]*(n+1); p = [0]*(n+1); way = [0]*(n+1)
+    for i in range(1, n+1):
+        p[0] = i
+        j0 = 0
+        minv = [INF]*(n+1)
+        used = [False]*(n+1)
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            delta = INF
+            j1 = 0
+            for j in range(1, n+1):
+                if not used[j]:
+                    cur = cost[i0-1][j-1] - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j] = cur
+                        way[j] = j0
+                    if minv[j] < delta:
+                        delta = minv[j]
+                        j1 = j
+            for j in range(n+1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+            if j0 == 0:
+                break
+    assignment = [0]*n
+    for j in range(1, n+1):
+        if p[j]:
+            assignment[p[j]-1] = j-1
+    return assignment
+
+
+
+
+
+
+
+def facelets_lab(BGR_detected):
+    ''' Returns a numpy array with the L*a*b color (L 0-100, a and b centered on 0) of each facelet.'''
+    lab = cv2.cvtColor(np.array([BGR_detected], dtype=np.uint8), cv2.COLOR_BGR2LAB)[0].astype(float)
+    lab[:, 0] *= 100/255
+    lab[:, 1:] -= 128
+    return lab
+
+
+
+
+
+
+
+def cube_colors_interpreted_Lab(BGR_detected):
+    ''' Last attempt, used when the BGR and HSV approaches don't give a coherent cube status.
+    Facelets are clustered in the L*a*b color space, by forcing exactly 9 facelets per color (balanced assignment),
+    therefore a facelet can't be assigned to a color that already has its 9 facelets.
+    The color references start from the center facelets, and are then updated to the median color of the facelets
+    assigned to each color: this makes the references robust to a center with a logo, or to a center with reflections.
+    This handles off-white (cream) facelets, that by Hue alone are close to orange/yellow.
+    Returns the cube status (facelet number and color name as used by the solver, in kociemba order).'''
+    
+    centers = [4, 13, 22, 31, 40, 49]                                    # center facelet numbers
+    names = ['white', 'red', 'green', 'yellow', 'orange', 'blue']        # solver color names, as per the centers order
+    lab = facelets_lab(BGR_detected)                                     # L*a*b color of each facelet
+    refs = np.array([lab[c] for c in centers])                           # initial color references are the centers
+    labels = None
+    for _ in range(10):                                                  # iterations until the assignment is stable
+        dist = np.array([[np.linalg.norm(lab[i] - refs[k]) for k in range(6)] for i in range(54)])
+        for k, c in enumerate(centers):                                  # each center keeps its own color
+            dist[c, :] = 1e6
+            dist[c, k] = 0
+        cost = [[dist[i][j//9] for j in range(54)] for i in range(54)]  # each color is repeated 9 times (9 facelets per color)
+        new_labels = [j//9 for j in balanced_assignment(cost)]           # color index assigned to each facelet
+        if new_labels == labels:
+            break
+        labels = new_labels
+        refs = np.array([np.median(lab[[i for i in range(54) if labels[i] == k]], axis=0) for k in range(6)])
+    
+    return {i: names[labels[i]] for i in range(54)}
+
+
+
+
+
+
+
+def valid_color_sequence(cube_color_sequence):
+    ''' True when the cube color sequence contains the six cube colors.'''
+    return sorted(cube_color_sequence) == sorted(['white', 'red', 'green', 'yellow', 'orange', 'blue'])
+
+
+
+
+
+
+
+def centers_color_sequence(BGR_detected):
+    ''' Returns the cube color sequence (colors of the URFDLB centers), by matching the centers to typical cube colors
+    in the L*a*b color space, with one center per color.'''
+    
+    typical = {'white':(92, 0, 8), 'red':(45, 60, 40), 'green':(55, -50, 30),
+               'yellow':(85, -5, 75), 'orange':(65, 45, 65), 'blue':(35, 10, -45)}  # typical L*a*b of the cube colors
+    names = list(typical.keys())
+    lab = facelets_lab(BGR_detected)
+    cost = [[float(np.linalg.norm(lab[c] - np.array(typical[n]))) for n in names] for c in [4, 13, 22, 31, 40, 49]]
+    return [names[j] for j in balanced_assignment(cost)]
+
+
+
+
+
+
+
 def cube_colors_interpreted_sketch(cube_status, cube_color_sequence, edge, frame, font,                                    fontScale, lineType, color_detection_winner):
     ''' Based on the detected cube status, a sketch of the cube is plot with bright colors.''' 
     
@@ -1591,6 +1718,8 @@ def decoration(deco_info):
         print('cube status detected via BGR color distance')  # feedback is printed to the terminal
     elif color_detection_winner == 'HSV':            # case the cube is correctly detected via 'HSV'
         print('cube status detected via HSV color analysis')  # feedback is printed to the terminal
+    elif color_detection_winner == 'Lab':            # case the cube is correctly detected via 'Lab'
+        print('cube status detected via Lab color clustering')  # feedback is printed to the terminal
     print('Cube status image saved at: ', fname, '\n') # feedback is printed to the terminal
     status=cv2.imwrite(fname, collage)               # cube sketch with detected and interpred colors is saved as image
     
@@ -2283,6 +2412,7 @@ def cubeAF():
                         
                         # cube string status with colors detected 
                         cube_status, HSV_detected, cube_color_sequence = cube_colors_interpreted(kociemba_facelets_BGR_mean)
+                        BGR_color_sequence = cube_color_sequence   # color sequence from the BGR approach (used by the Lab approach)
                         
                         cube_status_string = cube_string(cube_status)  # cube string for the solver
                         cube_status, cube_status_string, solution, solution_Text = solve_or_correct(cube_status, cube_status_string)   # Kociemba solver is called to have the solution string
@@ -2303,6 +2433,20 @@ def cubeAF():
                             color_detection_winner='HSV'            # variable used to log which method give the solution
                             
                             if solution_Text == 'Error':            # in case color color detection fail also with HSV approach
+                                # last attempt: balanced clustering in the L*a*b color space
+                                cube_status = cube_colors_interpreted_Lab(kociemba_facelets_BGR_mean)
+                                cube_status_string = cube_string(cube_status)
+                                cube_status, cube_status_string, solution, solution_Text = solve_or_correct(cube_status, cube_status_string)
+                                color_detection_winner='Lab'        # variable used to log which method give the solution
+                                if not valid_color_sequence(cube_color_sequence):    # case the HSV color sequence is not valid
+                                    if valid_color_sequence(BGR_color_sequence):
+                                        cube_color_sequence = BGR_color_sequence
+                                    else:
+                                        cube_color_sequence = centers_color_sequence(kociemba_facelets_BGR_mean)
+                                if debug:   # case the debug variable is set True
+                                    print(f'\nCube status (via Lab clustering): {cube_status_string}')
+                            
+                            if solution_Text == 'Error':            # in case color color detection fail also with Lab approach
                                 color_detection_winner='Error'      # the winner approach goes to error, for log purpose
                             else: 
                                 if debug:   # case the debug variable is set True
