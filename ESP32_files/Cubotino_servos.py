@@ -537,7 +537,7 @@ def check_moves(moves, debug):
         elif moves[i]=='F':                                       # case there is a flip on the move string
             tot_moves+=int(moves[i+1])                            # counter is increased
         
-        if servo_angle<-90 or servo_angle>180:                    # case the angle counter is out of range
+        if servo_angle<-90 or servo_angle>90:                     # case the angle counter is out of range (-90 to 90 deg from home)
             if debug:
                 print(f'servo_angle out of range at string pos:{i}')  # info are printed
             servo_angle_ok=False                                  # bolean of results is updated
@@ -677,6 +677,11 @@ def servo_solve_cube(moves, debug, stop_btn, btn_ref):
     servo_angle_ok, tot_moves = check_moves(moves, debug)    
     if debug:
         print(f'total amount of servo movements: {tot_moves}\n')    
+    
+    if not servo_angle_ok:                                   # case the moves would bring the bottom servo out of its range
+        print('servo range error, moves rejected')           # message to UART (shown on the PC terminal)
+        stopping_servos(debug)                               # servos are positioned back to start postion
+        return 'Robot_stopped', 0                            # no servo move is made
     
     start_moves=tot_moves                                    # start moves is the calculates movements prior starting
     remaining_moves=tot_moves                                # at start the remaining moves are obviosly all the moves
@@ -850,12 +855,11 @@ def fix_cube_sequence():
     debug=False
     
     stop_btn=TouchPad(Pin(32))                # create the touch pad button object in GPIO 13
-    stop_btn_value=stop_btn.read()            # create a global variable for the touchPad button variable
     btn_ref = 0                               # button threshold reference is set initially to zero
     n=1000                                    # number of touch buttong reading to perform as initial reference
     for i in range(n):                        # iteration for 1000 readings
-        btn_ref+=stop_btn_value               # touch pad value is added to the reference at each iteration                                
-    btn_ref=btn_ref//n//2                     # button threshold reference is set at 50% the average value during previous iteration    if debug:
+        btn_ref+=stop_btn.read()              # a new touch pad reading is added to the reference at each iteration
+    btn_ref=btn_ref//n//2                     # button threshold reference is set at 50% the average value during previous iteration
     if debug:
         print("ref_stop_btn_value:",btn_ref)
     

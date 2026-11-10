@@ -167,6 +167,9 @@ def main_func(debug, robot_init_status, robot_status, stop_btn, btn_ref, connect
         slightly creative mode to use the uart."""
     
     strMsg=''                             # string variable used to generate the received string
+    solution=''                           # cube solution string, set once received from the PC
+    sol_string_ready=False                # a 'start' received before any solution string is then ignored
+    robot_time=0                          # robot solving time, set by the robot solver
     
     while True:                           # infinite loop
         sleep_ms(20)                      # fix little delay, to prevent using much resorcuces from the microcontroller
@@ -265,10 +268,9 @@ if not robot_init_status:                          # case the robot is not initi
         led.off()                                  # ESP32 blue led is switched off
         sleep_ms(100)                              # delay of 100ms
 
-    stop_btn_value=stop_btn.read()                 # create a global variable for the touchPad button variable
     btn_ref = 0                                    # button threshold reference is set initially to zero
     for i in range(1000):                          # iteration for 1000 readings
-        btn_ref+=stop_btn_value                    # touch pad value is added to the reference at each iteration                                    
+        btn_ref+=stop_btn.read()                   # a new touch pad reading is added to the reference at each iteration
     btn_ref=btn_ref//2000                          # button threshold reference is set at 50% the average value during previous iteration
     if debug:
         print("ref_stop_btn_value:",btn_ref)
