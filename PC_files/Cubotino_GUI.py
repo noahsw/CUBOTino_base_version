@@ -93,18 +93,16 @@ import Cubotino_moves as cm             # translate a cube solution into CUBOTin
 
 
 import sys                                            # library import to check if another lybrary is already imported
-if 'solver' in sys.modules or 'cm' in globals():      # case the library 'solver'is already imported
-    solver_already_imported = True                    # booleand variable is set true
-else:                                                 # case the library 'solver'is not already imported
-    solver_already_imported = False                   # booleand variable is set true
+# case the solver is already imported (i.e. by Cubotino_webcam), to not print twice the import feedback
+solver_already_imported = 'solver' in sys.modules or 'twophase.solver' in sys.modules
 
 try:                                                  # attempt
     import solver as sv                               # import Kociemba solver, copied in robot folder
     import face, cubie                                # import other Kociemba solver library parts, copied in robot folder
     if not solver_already_imported:                   # case the solver was not already imported                                 
-        print('imported the installed twophase solver...')  # feedback is printed to the terminal
+        print('imported the copied twophase solver...')     # feedback is printed to the terminal
     solver_found = True                               # boolean to track no exception on import the copied solver
-except:                                               # exception is raised if no library in folder or other issues
+except ImportError:                                   # exception is raised if no library in folder
     solver_found = False                              # boolean to track exception on importing the copied solver
     
 if not solver_found:                                  # case the library was not in folder
@@ -113,15 +111,14 @@ if not solver_found:                                  # case the library was not
         import twophase.face as face                  # import face Kociemba solver library part, installed
         import twophase.cubie as cubie                # import cubie Kociemba solver library part, installed
         if not solver_already_imported:               # case the solver was not already imported 
-            print('imported the copied twophase solver...') # feedback is printed to the terminal
+            print('imported the installed twophase solver...') # feedback is printed to the terminal
         twophase_solver_found = True                  # boolean to track no exception on import the installed solver
-    except:                                           # exception is raised if no library in venv or other issues
+    except ImportError:                               # exception is raised if no library in venv
         twophase_solver_found = False                 # boolean to track exception on importing the installed solver
 
 if not solver_found and not twophase_solver_found:    # case no one solver has been imported
-    if solver_already_imported:                       # case the solver was not already imported 
-        print('\n(Kociemba) twophase solver not found')    # feedback is printed to the terminal
-    quit()
+    print('\n(Kociemba) twophase solver not found')        # feedback is printed to the terminal
+    sys.exit(1)
 
 # print()
 
@@ -132,6 +129,7 @@ from tkinter import ttk              # GUI library
 from tkinter import font as tkfont  # GUI library, used to scale fonts with the window size
 import datetime as dt                # date and time library used as timestamp on a few situations (i.e. data log)
 import threading                     # threading library, to parallelize uart data 
+import queue                         # queue library, to pass the uart data from the reading thread to the GUI thread
 import time                          # time library is imported
 import os                            # os is imported to ensure the file presence, check/make
 
@@ -375,6 +373,7 @@ cube_solving_string_robot=""   # string variable holding the string sent to the 
 gui_buttons_state="active"     # string variable used to activate/deactivate GUI buttons according to the situations
 robot_working=False            # boolean variable to track the robot working condition, initially False
 serialData=False               # boolean variable to track when the serial data can be exchanged, initially False
+serial_queue=queue.Queue()     # lines received from the robot, by the serial reading thread
 robot_moves=""                 # string variable holding all the robot moves (robot manoeuvres)
 cube_status={}                 # dictionary variable holding the cube status, for GUI update to robot permutations
 left_moves={}                  # dictionary holding the remaining robot moves
@@ -1165,7 +1164,7 @@ def start_robot():
         left_Cubotino_moves(robot_moves)                # left moves of the robot are calculated / stored
         gui_prog_bar["value"]=0                         # progress bar is set to zero
         gui_f2.update()                                 # frame2 of the gui is updated
-        gui_f2.after(1000, gui_robot_btn_update())      # updates the cube related buttons status, with 1 sec delay
+        gui_f2.after(1000, gui_robot_btn_update)        # updates the cube related buttons status, with 1 sec delay
 
 
 
@@ -1704,7 +1703,7 @@ def connection():
                                 parity=serial.PARITY_NONE,
                                 stopbits=serial.STOPBITS_ONE,
                                 bytesize=serial.EIGHTBITS,
-                                timeout=None,
+                                timeout=0.2,      # readline returns at least every 0.2s, so the reading thread can end
                                 xonxoff=False,
                                 rtscts=False,
                                 dsrdtr=False,     
@@ -1738,8 +1737,10 @@ def connection():
 
         b_settings["state"] = "active"               # settings button is activated
             
+        while not serial_queue.empty():              # lines left from a previous connection are discarded
+            serial_queue.get_nowait()
         t1 = threading.Thread(target=readSerial)     # a thread is associated to the readSerial function
-        t1.deamon = True                             # thread is set as deamon (runs in background with low priority)
+        t1.daemon = True                             # daemon thread: it doesn't keep python alive when the GUI is closed
         t1.start()                                   # thread is started
 
 
@@ -1748,101 +1749,116 @@ def connection():
 
 
 def readSerial():
-    """Functon, called by a daemon thread, that keeps reading the serial port."""
-    
+    """Functon, called by a daemon thread, that keeps reading the serial port.
+    The received lines are queued, and handled by poll_serial() on the GUI thread: tkinter is not thread-safe."""
+
+    line = b""                                        # bytes received so far, for the current line
+    while serialData and ser.isOpen():                # script has set the conditions for Serial com and serial port is found open
+        try:
+            data = ser.readline()                     # serial data is read by lines (returns earlier on timeout)
+        except Exception:                             # case the serial port is closed or the ESP32 is unplugged
+            break                                     # while loop is interrupted
+        line += data                                  # a partial line (timeout) is completed at next reading
+        if line.endswith(b"\n"):                      # case the line is complete
+            serial_queue.put(line)                    # line is passed to the GUI thread
+            line = b""                                # line is emptied for the next one
+
+
+
+
+
+
+def poll_serial():
+    """Function, called on the GUI thread every 20ms, that handles the lines queued by readSerial()."""
+
+    while True:
+        try:
+            data = serial_queue.get_nowait()          # next line received from the robot
+        except queue.Empty:                           # case there are no more lines
+            break
+        handle_serial_line(data)                      # the line is handled
+    root.after(20, poll_serial)                       # this function is called again after 20ms
+
+
+
+
+
+
+def handle_serial_line(data):
+    """Function that handles one line received from the robot."""
+
     global serialData, robot_working, gui_prog_bar, cube_solving_string, cube_solving_string_robot
     global end_method, robot_time
-    
-    while serialData and ser.isOpen():    # script has set the conditions for Serail com and serial port is found open
-        try:
-            data = ser.readline()                                     # serial dat is read by lines
-        except:
-            pass
 
-        if len(data) > 0:                                             # case there are characters read from the serial
-            try:
-                received = data.decode()                              # data is decoded
-                received=received.strip().strip("\n")                 # empty space and LF characters removed
-            except:
-                pass
-
-            if "conn" in received:                                    # case 'conn' is in received: ESP32 is connectd
-                print("established connection with ESP32\n")          # feedback is printed to the terminal
+    received = data.decode(errors="replace").strip()  # data is decoded, empty spaces and CR/LF characters removed
+    if "conn" in received:                                    # case 'conn' is in received: ESP32 is connectd
+        print("established connection with ESP32\n")          # feedback is printed to the terminal
 
 
-            elif "<" in received and ">" in received:                 # robot replies with the received solving string
-                if received==cube_solving_string_robot.strip("\r\n"): # check if the robot received string is ok
-                    start_robot()                                     # call the robot start function
-                else:
-                    print(f"cube_solving_string_robot received by the robot differs from :{cube_solving_string_robot}")
-                    print("====================================================================================")
+    elif "<" in received and ">" in received:                 # robot replies with the received solving string
+        if received==cube_solving_string_robot.strip("\r\n"): # check if the robot received string is ok
+            start_robot()                                     # call the robot start function
+        else:
+            print(f"cube_solving_string_robot received by the robot differs from :{cube_solving_string_robot}")
+            print("====================================================================================")
 
 
-            elif "stop" in received and robot_working==True:          # case 'stop' is in received: Robot been stopped
-                print("\nstop command has been received by the robot\n")  # feedback is printed to the terminal
-                print("====================================================================================")
-                robot_working=False                                   # boolean trcking the robot working is set False
-                end_method="stopped"                                  # variable tracking the end method
-                if '(' in received and ')' in received:               # case the dat contains open and close parenthesis
-                    data_start = received.find('(')                   # position of open parenthesys in received
-                    data_end = received.find(')')                     # position of close parenthesys in received
-                    robot_time = received[data_start+1:data_end]      # data between parenthesys is assigned
-                log_data()                                            # log the more relevant data
-                progress_update('i_end')                              # progress feedback is ise to end
-                gui_text_window.delete(1.0, tk.END)                   # clears the text window
-                cube_solving_string=""                                # cube solving string is set empty
-                gui_robot_btn_update()                                # updates the cube related buttons status
+    elif "stop" in received and robot_working==True:          # case 'stop' is in received: Robot been stopped
+        print("\nstop command has been received by the robot\n")  # feedback is printed to the terminal
+        print("====================================================================================")
+        robot_working=False                                   # boolean trcking the robot working is set False
+        end_method="stopped"                                  # variable tracking the end method
+        if '(' in received and ')' in received:               # case the dat contains open and close parenthesis
+            data_start = received.find('(')                   # position of open parenthesys in received
+            data_end = received.find(')')                     # position of close parenthesys in received
+            robot_time = received[data_start+1:data_end]      # data between parenthesys is assigned
+        log_data()                                            # log the more relevant data
+        progress_update('i_end')                              # progress feedback is ise to end
+        gui_text_window.delete(1.0, tk.END)                   # clears the text window
+        cube_solving_string=""                                # cube solving string is set empty
+        gui_robot_btn_update()                                # updates the cube related buttons status
 
 
-            elif "start" in received:                                 # case 'start' is in received: Robot is solving
-                print("start command has been received by the robot") # feedback is printed to the terminal
+    elif "start" in received:                                 # case 'start' is in received: Robot is solving
+        print("start command has been received by the robot") # feedback is printed to the terminal
 
 
-            elif "i_" in received:                                    # case 'i_' is received: Robot progress index
-                progress_update(received)                             # progress function is called
+    elif "i_" in received:                                    # case 'i_' is received: Robot progress index
+        progress_update(received)                             # progress function is called
 
 
-            elif "solved" in received:                                # case 'solved' is in received: Robot is solving                          
-                robot_time=0.0
-                robot_working=False                                   # boolean trcking the robot working is set False
-                if gui_scramble_var.get():                            # case the scramble check box is checked
-                    end_method="scrambled"                            # variable tracking the end method
-                elif not gui_scramble_var.get():                      # case the scramble check box is not checked
-                    end_method="solved"                               # variable tracking the end method
-                if '(' in received and ')' in received:               # case the dat contains open and close parenthesis
-                    data_start = received.find('(')                   # position of open parenthesys in received
-                    data_end = received.find(')')                     # position of close parenthesys in received
-                    robot_time = received[data_start+1:data_end]      # data between parenthesys is assigned
-                log_data()                                            # log the more relevant data
-                gui_text_window.delete(1.0, tk.END)                   # clears the text window
-                cube_solving_string=""                                # cube solving string is set empty
+    elif "solved" in received:                                # case 'solved' is in received: Robot is solving                          
+        robot_time=0.0
+        robot_working=False                                   # boolean trcking the robot working is set False
+        if gui_scramble_var.get():                            # case the scramble check box is checked
+            end_method="scrambled"                            # variable tracking the end method
+        elif not gui_scramble_var.get():                      # case the scramble check box is not checked
+            end_method="solved"                               # variable tracking the end method
+        if '(' in received and ')' in received:               # case the dat contains open and close parenthesis
+            data_start = received.find('(')                   # position of open parenthesys in received
+            data_end = received.find(')')                     # position of close parenthesys in received
+            robot_time = received[data_start+1:data_end]      # data between parenthesys is assigned
+        log_data()                                            # log the more relevant data
+        gui_text_window.delete(1.0, tk.END)                   # clears the text window
+        cube_solving_string=""                                # cube solving string is set empty
                 
-                show_text(f"\n Cube {end_method} in: {robot_time} secs")  # feedback is showed on the GUI                
-                print(f"\nCube {end_method}, in: {robot_time} secs")      # feedback to the terminal
-                print("\n===========================================================================================")
-                gui_robot_btn_update()                                    # updates the cube related buttons status
+        show_text(f"\n Cube {end_method} in: {robot_time} secs")  # feedback is showed on the GUI                
+        print(f"\nCube {end_method}, in: {robot_time} secs")      # feedback to the terminal
+        print("\n===========================================================================================")
+        gui_robot_btn_update()                                    # updates the cube related buttons status
 
 
-            elif "current_settings" in received:                      # case 'current_settings' is in received 
-                print("\nservos settings request has been received by the robot")  # feedback is printed to the terminal
-                robot_received_settings(received)                     # robot_received_settings function is called
+    elif "current_settings" in received:                      # case 'current_settings' is in received 
+        print("\nservos settings request has been received by the robot")  # feedback is printed to the terminal
+        robot_received_settings(received)                     # robot_received_settings function is called
             
 
-            elif "new_settings" in received:                          # case 'new_settings' is in received 
-                print("new servos settings has been received by the robot")   # feedback is printed to the terminal
+    elif "new_settings" in received:                          # case 'new_settings' is in received 
+        print("new servos settings has been received by the robot")   # feedback is printed to the terminal
 
             
-            else:                                                     # case not expected data is received
-                if data=='\n':
-                    pass
-                else:
-                    print(f"unexpected data received by the robot: {received}") # feedback is printed to the terminal
-
-        else:                                                 # case there not countable characters read from the serial
-            if data!=b"":                                     # case the character is not an empty binary
-                print(f"len data not >0")                     # feedback is printed to the terminal
-                print(f"undecoded data from robot: {data}")   # feedback is printed to the terminal
-                break                                         # while loop is interrupted
+    elif received:                                            # case not expected data is received
+        print(f"unexpected data received by the robot: {received}") # feedback is printed to the terminal
 
 
 
@@ -1864,60 +1880,6 @@ def close_window():
     serialData = False                             # boolean tracking serial comm conditions is set False
     root.destroy()                                 # GUI is closed
 
-
-
-
-
-
-# ################################### functions to get the slider values  ##############################################
-
-def servo_CCW(val):
-    b_servo_CCW = int(val)     # bottom servo position when fully CW
-
-def servo_home(val):
-    b_home = int(val)          # bottom servo home position
-
-def servo_CW(val):
-    b_servo_CW = int(val)      # bottom servo position when fully CCW
-    
-def servo_extra_sides(val):
-    b_extra_sides = int(val)   # bottom servo position small rotation back from CW and CCW, to release tension
-    
-def servo_extra_home(val):
-    b_extra_home = int(val)    # bottom servo position extra rotation at home, to releasetension
-
-def servo_rotate_time(val):
-    b_rotate_time = int(val)   # time needed to the bottom servo to rotate about 90deg
-
-def servo_rotate_time(val):
-    b_rel_time = int(val)      # time to rotate slightly back, to release tensions
-
-def servo_spin_time(val):
-    b_spin_time = int(val)     # time needed to the bottom servo to spin about 90deg
-
-def servo_flip(val):
-    t_servo_flip = int(val)    # top servo pos to flip the cube on one of its horizontal axis
-
-def servo_open(val):
-    t_servo_open = int(val)    # top servo pos to free up the top cover from the cube
-
-def servo_close(val):
-    t_servo_close = int(val)   # top servo pos to constrain the top cover on cube mid and top layer
-
-def servo_release(val):
-    t_servo_release = int(val)       # top servo release position after closing toward the cube
-
-def flip_to_close_time(val):
-    t_flip_to_close_time = int(val)  # time to lower the cover/flipper from flip to close position     
-
-def close_to_flip_time(val):
-    t_close_to_flip_time = int(val)  # time to raise the cover/flipper from close to flip position
-
-def flip_open_time(val):
-    t_flip_open_time = int(val)      # time to raise/lower the flipper between open and flip positions
-
-def open_close_time(val):
-    t_open_close_time = int(val)     # time to raise/lower the flipper between open and close positions
 
 
 
@@ -2468,25 +2430,25 @@ top_srv_label = tk.LabelFrame(settingWindow, text="Top cover - servo settings",
 top_srv_label.grid(row=3, column=0, rowspan=3, columnspan=4, sticky="w", padx=20, pady=0)
 
 s_top_srv_flip = tk.Scale(top_srv_label, label="PWM flip", font=('arial','11'), orient='horizontal',
-                               length=170, from_=s_pwm_flip_min, to_=s_pwm_flip_max, command=servo_flip)
+                               length=170, from_=s_pwm_flip_min, to_=s_pwm_flip_max)
 s_top_srv_flip.grid(row=4, column=0, sticky="w", padx=12, pady=5)
 s_top_srv_flip.set(t_servo_flip)
 
 
 s_top_srv_open = tk.Scale(top_srv_label, label="PWM open", font=('arial','11'), orient='horizontal',
-                               length=170, from_=s_pwm_open_min, to_=s_pwm_open_max, command=servo_open)
+                               length=170, from_=s_pwm_open_min, to_=s_pwm_open_max)
 s_top_srv_open.grid(row=4, column=1, sticky="w", padx=12, pady=5)
 s_top_srv_open.set(t_servo_open)
 
 
 s_top_srv_close = tk.Scale(top_srv_label, label="PWM close", font=('arial','11'), orient='horizontal',
-                              length=170, from_=s_pwm_close_min, to_=s_pwm_close_max, command=servo_close)
+                              length=170, from_=s_pwm_close_min, to_=s_pwm_close_max)
 s_top_srv_close.grid(row=4, column=2, sticky="w", padx=12, pady=5)
 s_top_srv_close.set(t_servo_close)
 
 
 s_top_srv_release = tk.Scale(top_srv_label, label="PWM release from close", font=('arial','11'), orient='horizontal',
-                              length=170, from_=0, to_=10, command=servo_release)
+                              length=170, from_=0, to_=10)
 s_top_srv_release.grid(row=4, column=3, sticky="w", padx=12, pady=5)
 s_top_srv_release.set(t_servo_close)
 
@@ -2506,28 +2468,28 @@ close_btn.grid(row=5, column=2, sticky="w", padx=15, pady=10)
 
 s_top_srv_flip_to_close_time = tk.Scale(top_srv_label, label="TIME: flip > close (ms)", font=('arial','11'),
                                         orient='horizontal', length=170, from_=200, to_=1000,
-                                        resolution=50, command=flip_to_close_time)
+                                        resolution=50)
 s_top_srv_flip_to_close_time.grid(row=6, column=0, sticky="w", padx=12, pady=5)
 s_top_srv_flip_to_close_time.set(t_flip_to_close_time)
 
 
 s_top_srv_close_to_flip_time = tk.Scale(top_srv_label, label="TIME: close > flip (ms)", font=('arial','11'),
                                         orient='horizontal', length=170, from_=200, to_=1000,
-                                        resolution=50, command=close_to_flip_time)
+                                        resolution=50)
 s_top_srv_close_to_flip_time.grid(row=6, column=1, sticky="w", padx=12, pady=5)
 s_top_srv_close_to_flip_time.set(t_close_to_flip_time)
 
 
 s_top_srv_flip_open_time = tk.Scale(top_srv_label, label="TIME: flip <> open (ms)", font=('arial','11'),
                                     orient='horizontal', length=170, from_=200, to_=1000,
-                                    resolution=50, command=flip_open_time)
+                                    resolution=50)
 s_top_srv_flip_open_time.grid(row=6, column=2, sticky="w", padx=10, pady=5)
 s_top_srv_flip_open_time.set(t_flip_open_time)
 
 
 s_top_srv_open_close_time = tk.Scale(top_srv_label, label="TIME: open <> close(ms)", font=('arial','11'),
                                      orient='horizontal', length=170, from_=100, to_=700,
-                                     resolution=50, command=open_close_time)
+                                     resolution=50)
 s_top_srv_open_close_time.grid(row=6, column=3, sticky="w", padx=12, pady=5)
 s_top_srv_open_close_time.set(t_open_close_time)
 
@@ -2542,25 +2504,25 @@ b_srv_label.grid(row=7, column=0, columnspan=5, sticky="w", padx=20, pady=10)
 
 
 s_btm_srv_CCW = tk.Scale(b_srv_label, label="PWM CCW", font=('arial','11'), orient='horizontal',
-                              length=170, from_=s_pwm_ccw_min, to_=s_pwm_ccw_max, command=servo_CCW)
+                              length=170, from_=s_pwm_ccw_min, to_=s_pwm_ccw_max)
 s_btm_srv_CCW.grid(row=8, column=0, sticky="w", padx=13, pady=5)
 s_btm_srv_CCW.set(b_servo_CCW)
 
 
 s_btm_srv_home = tk.Scale(b_srv_label, label="PWM home", font=('arial','11'), orient='horizontal',
-                               length=170, from_=s_pwm_home_min, to_=s_pwm_home_max, command=servo_home)
+                               length=170, from_=s_pwm_home_min, to_=s_pwm_home_max)
 s_btm_srv_home.grid(row=8, column=1, sticky="w", padx=12, pady=5)
 s_btm_srv_home.set(b_home)
 
 
 s_btm_srv_CW = tk.Scale(b_srv_label, label="PWM CW", font=('arial','11'), orient='horizontal',
-                               length=170, from_=s_pwm_cw_min, to_=s_pwm_cw_max, command=servo_CW)
+                               length=170, from_=s_pwm_cw_min, to_=s_pwm_cw_max)
 s_btm_srv_CW.grid(row=8, column=2, sticky="w", padx=12, pady=5)
 s_btm_srv_CW.set(b_servo_CW)
 
 
 s_btm_srv_extra_sides = tk.Scale(b_srv_label, label="PWM release CW/CCW", font=('arial','11'), orient='horizontal',
-                               length=170, from_=0, to_=11, command=servo_extra_sides)
+                               length=170, from_=0, to_=11)
 s_btm_srv_extra_sides.grid(row=8, column=3, sticky="w", padx=12, pady=5)
 s_btm_srv_extra_sides.set(b_extra_sides)
 
@@ -2666,6 +2628,7 @@ create_colorpick(width)                           # calls the function to genera
 update_coms()                                     # calls the function to generate the cube sketch
 root.protocol("WM_DELETE_WINDOW", close_window)   # the function close_function is called when the windows is closed
 root.bind("<Configure>", on_root_configure)       # GUI re-scales when the window is resized or maximized
+poll_serial()                                     # starts handling the data received from the robot
 root.mainloop()                                   # tkinter main loop
 
 ########################################################################################################################

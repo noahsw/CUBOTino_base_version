@@ -340,28 +340,27 @@ if __name__ == "__main__":
     
     ######################################              imports and hardware settings, for the robot activation part
     
-    import Cubotino_servos as servo
-    from machine import Pin, TouchPad
-    from utime import time
+    try:
+        import Cubotino_servos as servo
+        from machine import Pin, TouchPad
+    except ImportError:                 # case this script runs on the PC: no robot to activate
+        raise SystemExit
     
     stop_btn=TouchPad(Pin(32))          # create the touch pad button object in GPIO 13
-    stop_btn_value=stop_btn.read()      # create a global variable for the touchPad button variable
     btn_ref = 0                         # button threshold reference is set initially to zero
     n=1000                              # number of touch buttong reading to perform as initial reference
     for i in range(n):                  # iteration for 1000 readings
-        btn_ref+=stop_btn_value         # touch pad value is added to the reference at each iteration                                
+        btn_ref+=stop_btn.read()        # a new touch pad reading is added to the reference at each iteration
     btn_ref=btn_ref//n//2               # button threshold reference is set at 50% the average value during previous iteration
         
     debug=False                         # boolean variable to forse some prints for debug purpose
     
     if servo.init_servo(debug):                        # servos are initialized
-        start=time()                                   # time before start the robot movements
-        robot_status=servo.servo_solve_cube(moves, debug, stop_btn, btn_ref)   # robot solver is called
-        end=time()                                     # time after the robot movements
+        robot_status, robot_time = servo.servo_solve_cube(moves, debug, stop_btn, btn_ref)   # robot solver is called
 
         if robot_status == 'Cube_solved':              # case the robot solver returns Cube_solved in the robot_status
             print("\n Cube is solved")                 # print the status as feedback
-            print(f' Solving time: {end-start} secs')  # print the solving time as feedback
+            print(f' Solving time: {robot_time} secs') # print the solving time as feedback
         
         elif robot_status == 'Robot_stopped':          # case the robot solver returns Robot_stopped in the robot_status
             print("\n Robot has been stopped")         # print the status as feedback
