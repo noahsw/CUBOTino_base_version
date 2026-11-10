@@ -710,6 +710,11 @@ def solve():
     else:                                                           # case there is a cube status string
         if not gui_scramble_var.get():                              # case the scramble check box is not checked 
             show_text(f'Cube solution: {cube_solving_string}\n\n')  # solving string is printed on GUI text windows
+            if not 'Error' in cube_solving_string and len(cube_solving_string)>4:   # case there are moves to make
+                # how to hold the cube, and how to read the moves, for solving it by hand
+                show_text(f'To solve by hand: hold {cols[0].upper()} on top, {cols[2].upper()} facing you.\n')
+                show_text('U top, D bottom, F front, B back, R right, L left.\n')
+                show_text('1 = quarter turn clockwise, 2 = half turn, 3 = quarter turn counterclockwise.\n\n')
         if gui_scramble_var.get():                                  # case the scramble check box is checked
             s = cube_solving_string                                 # shorter local variable name     
             s_start = s.find('(')                                   # position of open parenthesys in data
