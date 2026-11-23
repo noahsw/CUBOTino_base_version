@@ -74,17 +74,18 @@ def test_robot(data,debug):
 
     if upload_status:                        # case the settings uploading process has been successfull
         servo.stop_release(debug)            # release the stop flag in case the robot has been previously stopped, and not re-initialized yet
-        if 'flip' in data:
+        test = data.strip('()')              # test name, without the round brackets
+        if test == 'flip':
             servo.flip_test()                # flip test function
-        elif 'close' in data:
+        elif test == 'close':
             servo.close_cover()              # close_cover function
-        elif 'open' in data:
+        elif test == 'open':
             servo.open_cover()               # open_cover function
-        elif 'ccw' in data:
+        elif test == 'ccw':
             servo.rotate_CCW_CW_test('CCW')  # rotate cube holder to CCW function
-        elif 'home' in data:
+        elif test == 'home':
             servo.rotate_home_test()         # rotate cube holder to home function
-        elif 'cw' in data:
+        elif test == 'cw':
             servo.rotate_CCW_CW_test('CW')   # rotate cube holder to CW function
         else:
             return
@@ -149,6 +150,21 @@ def solution_string(strMsg):
 
 
 
+def parse_command(strMsg):
+    """Splits a message received in square brackets, i.e. 'test(flip)', in the command name and its data in round brackets.
+       The data is an empty string when the message has no round brackets."""
+    
+    strMsg = strMsg.strip()             # eventual CR, LF and spaces are removed
+    pos = strMsg.find('(')              # position of the "(" character, where the data starts
+    if pos < 0:                         # case the message has no data
+        return strMsg, ''
+    return strMsg[:pos], strMsg[pos:strMsg.find(')', pos)+1]
+
+
+
+
+
+
 def flash_led(timer):
     """ function to alternation on/off the blue led."""
     
@@ -194,31 +210,29 @@ def main_func(debug, robot_init_status, robot_status, stop_btn, btn_ref, connect
                 strMsg=''                                             # string message variable used to generate the received string is emptied
             
             elif ']' in ch:                                           # case the character is a close square bracket (end of a message content)
-                if 'current_settings' in strMsg:                      # case the message string includes the 'current_settings' word 
+                command, data = parse_command(strMsg)                 # command name, and its data in round brackets
+                if command == 'current_settings':                     # case the message is the 'current_settings' request 
                     with open("Cubotino_settings.txt", "r") as f:     # txt file with settings is opened in read mode
                         data=f.readline()                             # first line is returned
                     print("current_settings" + str(data))             # message to UART with settings
                          
-                elif 'new_settings' in strMsg:                        # case the message string includes the 'new_settings' word 
+                elif command == 'new_settings':                       # case the message carries new settings 
                     save_new_settings(strMsg)                         # function to save the new settings is called
                 
-                elif 'test' in strMsg:                                # case the message string includes the 'test' word 
-                    data_start=strMsg.find('(')                       # string position for the open round square character (start of data content)
-                    data_end=strMsg.find(')')                         # string position for the open round square character (end of data content)
-                    data=strMsg[data_start:data_end+1]                # string is liced to only keep the data content
+                elif command == 'test':                               # case the message is a servo test request, i.e. 'test(flip)'
                     test_robot(data, debug)                           # function to test robot functions is called
                     
-                elif 'start' in strMsg:                               # case the message string includes the 'start' word 
+                elif command == 'start':                              # case the message is the 'start' request 
                     print('start')                                    # message to UART that the start has been received
                     if sol_string_ready:                              # case the cube solution string is ready
                          robot_status, robot_time  = robot_solver(solution, debug, stop_btn, btn_ref)   # robot solver function is called
                 
-                elif 'led_on' in strMsg:                              # case the message string includes the 'led_on' word
+                elif command == 'led_on':                             # case the message is the 'led_on' request
                     connect_status=True                               # the boolean variable that tracks the connection status is set true
                     if debug:
                         print('ESP 32 is connect_status')             # message to UART the connection is on
                 
-                elif 'led_off' in strMsg:                             # case the message string includes the 'led_off' word
+                elif command == 'led_off':                            # case the message is the 'led_off' request
                     connect_status=False                              # the boolean variable that tracks the connection status is set flase
                     if debug:
                         print('ESP 32 is disconnect_status')          # message to UART the connection is on

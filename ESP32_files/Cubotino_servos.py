@@ -572,7 +572,7 @@ def check_uart(debug, stop_btn, btn_ref):
         if '[' in ch:                                # case the received character is an open square bracket                     
             strMsg=''                                # the string variable for the full message is emptied
         elif ']' in ch:                              # case the received character is a close square bracket  
-            if 'stop' in strMsg:                     # case the message string variable contain the stop word
+            if strMsg.strip() == 'stop':             # case the message is the stop request
                 stop_servos= True                    # boolean for stopping the servo is set true
                 if debug:
                     print("received stop command")

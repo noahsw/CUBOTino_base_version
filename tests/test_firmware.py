@@ -64,6 +64,41 @@ def load_servos_module():
     return servo
 
 
+class FakeUart:
+    """Characters the PC has sent to the ESP32, read one at a time as MicroPython's sys.stdin does."""
+    def __init__(self, text):
+        self.text = text
+
+    def read(self, n):
+        ch, self.text = self.text[:n], self.text[n:]
+        return ch
+
+    def select(self, r, w, x, t=0):
+        return ([self] if self.text else [], [], [])
+
+
+def feed_uart(module, text):
+    """Makes the module read text from the UART."""
+    uart = FakeUart(text)
+    module.sys = types.SimpleNamespace(stdin=uart)
+    module.select = types.SimpleNamespace(select=uart.select)
+    return uart
+
+
+def load_main_functions(servo):
+    """Runs ESP32_files/main.py up to its main program (the infinite loop), and returns its functions."""
+    with open(os.path.join(ESP32, 'main.py')) as f:
+        source = f.read()
+    source = source[:source.index('# MAIN PROGRAM')]
+    sys.modules['Cubotino_servos'] = servo               # imported by main.py functions
+    machine = sys.modules['machine']
+    machine.Timer = lambda *a, **k: None
+    namespace = {'__name__': 'esp32_main'}
+    exec(compile(source, 'main.py', 'exec'), namespace)
+    namespace['debug'] = False
+    return namespace
+
+
 class TestFirmware(unittest.TestCase):
 
     def setUp(self):
@@ -102,6 +137,47 @@ class TestFirmware(unittest.TestCase):
         status, out = self.solve(moves)
         self.assertEqual(status, 'Cube_solved')
         self.assertEqual(out.count('i_'), tot)          # one progress message per servo move, as the GUI expects
+
+    def test_stop_request_is_matched_exactly(self):
+        cases = {'[stop]\n': True, '[stop]\r\n': True, '[led_off]\n[stop]\n': True,
+                 '[nonstop]\n': False, '[stopped]\n': False, '[start]\n': False, '': False}
+        for text, stops in cases.items():
+            self.servo.stop_servos = False
+            feed_uart(self.servo, text)
+            self.assertEqual(bool(self.servo.check_uart(False, FakeTouchPad(None), 250)), stops, repr(text))
+
+
+class TestFirmwareMain(unittest.TestCase):
+
+    def setUp(self):
+        self.servo = load_servos_module()
+        self.cwd = os.getcwd()
+        os.chdir(ESP32)
+        self.addCleanup(os.chdir, self.cwd)
+        self.main = load_main_functions(self.servo)
+
+    def test_parse_command(self):
+        parse = self.main['parse_command']
+        self.assertEqual(parse('start'), ('start', ''))
+        self.assertEqual(parse('led_on\r'), ('led_on', ''))
+        self.assertEqual(parse('test(ccw)'), ('test', '(ccw)'))
+        self.assertEqual(parse('new_settings(1,2,3)'), ('new_settings', '(1,2,3)'))
+        self.assertEqual(parse('restart'), ('restart', ''))      # not 'start'
+
+    def test_servo_tests_are_matched_exactly(self):
+        calls = []
+        self.servo.flip_test = lambda: calls.append('flip')
+        self.servo.close_cover = lambda: calls.append('close')
+        self.servo.open_cover = lambda: calls.append('open')
+        self.servo.rotate_CCW_CW_test = lambda d: calls.append(d)
+        self.servo.rotate_home_test = lambda: calls.append('home')
+        expected = {'(flip)': ['flip'], '(close)': ['close'], '(open)': ['open'], '(ccw)': ['CCW'],
+                    '(home)': ['home'], '(cw)': ['CW'], '(xcw)': [], '(reopen)': [], '': []}
+        for data, call in expected.items():
+            calls.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.main['test_robot'](data, False)
+            self.assertEqual(calls, call, data)
 
 
 if __name__ == '__main__':

@@ -41,24 +41,24 @@ try:
     print(f'Python version: {sys.version}')           # print to termina the python version
     print(f'CV2 version: {cv2.__version__}')          # print to terminal the cv2 version
     print()
-except:
+except Exception:
     pass
 
 
 # there are two import attempts for Kociemba solver
 try:                                                  # attempt
     import solver as sv                               # import Kociemba solver copied in robot folder
-    print('\nimported the installed twophase solver')  # feedback is printed to the terminal
+    print('\nimported the copied twophase solver')     # feedback is printed to the terminal
     solver_found = True                               # boolean to track no exception on import the copied solver
-except:                                               # exception is raised if no library in folder or other issues
+except ImportError:                                   # exception is raised if no library in folder
     solver_found = False                              # boolean to track exception on importing the copied solver
     
 if not solver_found:                                  # case the library was not in folder
     try:                                              # attempt
         import twophase.solver as sv                  # import Kociemba solver installed
-        print('\nimported the copied twophase solver') # feedback is printed to the terminal
+        print('\nimported the installed twophase solver') # feedback is printed to the terminal
         twophase_solver_found = True                  # boolean to track no exception on import the installed solver
-    except:                                           # exception is raised if no library in venv or other issues
+    except ImportError:                               # exception is raised if no library in venv
         twophase_solver_found = False                 # boolean to track exception on importing the installed solver
 
 if not solver_found and not twophase_solver_found:    # case no one solver has been imported
@@ -1138,14 +1138,14 @@ def retrieve_cube_color_order(VS_value,Hue):
     
     try:
         centers.remove(white_center)                 # white facelet is removed from the list of center's facelets
-    except:
+    except (ValueError, NameError):
         HSV_analysis=False
         if debug:                                    # case the variable debug is set True 
             print(f'\nIssue with the white_center')  # feedback is printed to the terminal
     
     try:
         centers.remove(yellow_center)                # yellow facelet is removed from the list of center's facelets
-    except:
+    except (ValueError, NameError):
         HSV_analysis=False
         if debug:                                    # case the variable debug is set True
             print(f'\nIssue with the yellow_center') # feedback is printed to the terminal
@@ -1167,14 +1167,14 @@ def retrieve_cube_color_order(VS_value,Hue):
     
     try:
         centers.remove(red_center)            # red facelet is removed from the list of center's facelets
-    except:
+    except (ValueError, NameError):
         HSV_analysis=False
         if debug:                             # feedback is printed to the terminal
             print(f'\nIssue with the red_center')  # feedback is printed to the terminal
     
     try:
         centers.remove(orange_center)         # orange facelet is removed from the list of center's facelets
-    except:
+    except (ValueError, NameError):
         HSV_analysis=False
         if debug:                             # feedback is printed to the terminal
             print(f'\nIssue with the orange_center')  # feedback is printed to the terminal
@@ -1285,7 +1285,7 @@ def cube_colors_interpreted_HSV(BGR_detected, HSV_detected):
             try:
                 del Hue[facelet]                           # all white facelets are removed from the Hue dictionary
                 white_facelets[facelet]='white'            # dictionary with white facelets is populated
-            except:
+            except KeyError:
                 HSV_analysis = False
                 break
         
@@ -1301,7 +1301,7 @@ def cube_colors_interpreted_HSV(BGR_detected, HSV_detected):
         try:
             Hcenters=[Hue[x] for x in colored_centers]            # list of Hue values for the colored centers
             # an error can happen if the same cube side has been showed twice or more
-        except:
+        except KeyError:
             if debug:   # case the variable debug is set True
                 print('\nNot found 6 different colors at center facelets')   # feedback is printed to the terminal
             HSV_analysis=False
@@ -1734,7 +1734,7 @@ def decoration(deco_info):
 
     try: cv2.destroyWindow('cube_collage')           # cube window is closed at function end
 
-    except: pass
+    except cv2.error: pass
 
 
 
@@ -2185,11 +2185,11 @@ def clear_terminal():
     if platform.system()=='Windows':
         try:
             subprocess.Popen('cls', shell=True).communicate() 
-        except:
+        except OSError:
             pass
         try:
             clear_output()
-        except:
+        except NameError:                # clear_output exists only in a Jupyter notebook
             pass
 
     else: #Linux and Mac
@@ -2212,12 +2212,12 @@ def quit_func():
     
     try:                             # tentative
         cv2.destroyAllWindows()      # all cv2 windows are removed
-    except:                          # case of exception raised
+    except Exception:                # case of exception raised
         pass                         # do nothing
     
     try:                             # tentative
         close_camera()               # webcam is close
-    except:                          # case of exception raised
+    except Exception:                # case of exception raised
         pass                         # do nothing
 
 
@@ -2244,7 +2244,7 @@ def close_camera():
     
     try:                             # tentative
         camera.release()             # if the program gets stuk it's because the camera remained open from previour run
-    except:                          # case of exception raised
+    except Exception:                # case of exception raised
         pass                         # do nothing
 
 

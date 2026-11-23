@@ -1,0 +1,8 @@
+# Python packages for the PC side of the robot (PC_files: the GUI, the webcam reading and the cube solver).
+# Install with:  python3 -m pip install -r requirements.txt
+# Tkinter is also needed; it comes with most Python installers (on Ubuntu: sudo apt install python3-tk).
+# The ESP32 files run on MicroPython and need no packages.
+pyserial>=3.5          # serial communication with the ESP32
+opencv-python>=4.5     # webcam reading
+numpy>=1.20            # used by the webcam reading
+RubikTwoPhase>=1.1.1   # Kociemba two-phase cube solver
