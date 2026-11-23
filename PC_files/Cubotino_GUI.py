@@ -295,14 +295,14 @@ def settings_update(data):
             with open("Cubotino_settings_backup.txt", "w") as f:  # open the servos settings text backup file in write mode
                 f.write(data_save)                                # data_save is saved
             print("updated Cubotino_settings_backup.txt to be compatible with 4.1 and later versions")
-        except:
+        except OSError:
             print("Something went wrong while updating Cubotino_settings_backup.txt file")
         
         try: 
             with open("Cubotino_settings.txt", "w") as f:         # open the servos settings text file in write mode
                 f.write(data_save)                                # data_save is saved
             print("updated Cubotino_settings.txt to be compatible with 4.1 and later versions")
-        except:
+        except OSError:
             print("Something went wrong while updating Cubotino_settings.txt file")
         return data    # updated parameters are returned
         
@@ -374,6 +374,8 @@ gui_buttons_state="active"     # string variable used to activate/deactivate GUI
 robot_working=False            # boolean variable to track the robot working condition, initially False
 serialData=False               # boolean variable to track when the serial data can be exchanged, initially False
 serial_queue=queue.Queue()     # lines received from the robot, by the serial reading thread
+ser=None                       # serial port to the robot, set once connected
+SERIAL_ERRORS=(serial.SerialException, OSError, AttributeError)  # errors when the robot isn't (or no longer) connected
 robot_moves=""                 # string variable holding all the robot moves (robot manoeuvres)
 cube_status={}                 # dictionary variable holding the cube status, for GUI update to robot permutations
 left_moves={}                  # dictionary holding the remaining robot moves
@@ -433,7 +435,7 @@ def write_backup_settings(data):
         with open("Cubotino_settings_backup.txt", "w") as f:  # open the servos settings text backup file in read mode
             f.write(backup)                              # data is on first line
         print("saved last settings to Cubotino_settings_backup.txt file")
-    except:
+    except OSError:
         print("Something went wrong while saving Cubotino_settings_backup.txt file")
 
 
@@ -776,7 +778,7 @@ def solve():
                         for col in range(3):     # iteration over the three columns of facelets
                             color=gray_cols[base_cols.index(gui_canvas.itemcget(facelet_id[f][row][col], "fill"))]
                             gui_canvas.itemconfig(facelet_id[f][row][col], fill=color)
-            except:
+            except ValueError:                   # case a facelet color isn't in the list
                 print("exception 1 at Cubotino_GUI.solve()")
 
     elif not gui_scramble_var.get():             # case the scramble check box is not checked
@@ -788,7 +790,7 @@ def solve():
                         for col in range(3):     # iteration over the three columns of facelets
                             color=base_cols[gray_cols.index(gui_canvas.itemcget(facelet_id[f][row][col], "fill"))]
                             gui_canvas.itemconfig(facelet_id[f][row][col], fill=color)
-            except:
+            except ValueError:                   # case a facelet color isn't in the list
                 print("exception 2 at Cubotino_GUI.solve()")
                 
     for i in range(6):                   # iteration on six center facelets
@@ -813,7 +815,7 @@ def solve():
 
 
                 
-    except:                                              # case the cube definition string is not returned 
+    except KeyError:                                     # case the cube definition string is not returned 
         show_text("Invalid facelet configuration.\nWrong or missing colors.")  # feedback to user
         return  # function is terminated
     
@@ -1072,9 +1074,8 @@ def gui_buttons_for_cube_status(status):
             b_read_solve["relief"] = "sunken"    # button read&solve is lowered
             gui_f2.update()                      # frame2 gui part is updated
             return "disable"                     # string "disable" is returned
-    except:
+    except (tk.TclError, NameError):         # case the buttons aren't (yet) available
         return "error"
-        pass
 
 
 
@@ -1099,10 +1100,7 @@ def robot_solver():
                 sr = "<" + sr +">"                        # starting '<' and ending '>' chars are added
             cube_solving_string_robot = sr                # global variable is updated
             
-            try:
-                ser.write((sr+"\n").encode())             # attempt to send the solving string to the robot      
-            except:
-                pass
+            send_to_robot(sr)                             # attempt to send the solving string to the robot
         
         else:                                             # case the cube_solving_string doesn't fit pre-conditions
             print("not a proper string...")               # feedback is printed to the terminal
@@ -1152,19 +1150,26 @@ def start_robot():
 #     print("\n====================================================================================")
     print(f"{time.ctime()}: request the robot to start {task} the cube") # print to the terminal
     
-    exception=False                                     # boolean to track the exceptions, set to false
-    try:
-        ser.write(("[start]\n").encode())               # attempt to send the start command to the robot
-    except:
-        exception=True                                  # boolean to track the exceptions is set true cause exception
-        pass
-    
-    if not exception:                                   # case there are no exceptions
+    if send_to_robot("[start]"):                        # case the start command is sent to the robot
         robot_working=True                              # boolean that tracks the robot working is set True
         left_Cubotino_moves(robot_moves)                # left moves of the robot are calculated / stored
         gui_prog_bar["value"]=0                         # progress bar is set to zero
         gui_f2.update()                                 # frame2 of the gui is updated
         gui_f2.after(1000, gui_robot_btn_update)        # updates the cube related buttons status, with 1 sec delay
+
+
+
+
+
+
+def send_to_robot(command):
+    """Sends a command to the robot, on its own line. Returns False when the serial port isn't available."""
+    
+    try:
+        ser.write((command+"\n").encode())
+        return True
+    except SERIAL_ERRORS:
+        return False
 
 
 
@@ -1177,11 +1182,8 @@ def stop_robot():
     global robot_working 
     
     print("\nstopping the robot from GUI")              # print to the terminal 
-    try:
-        ser.write(("[stop]\n").encode())                # attempt to send the stop command to the robot
-    except:
-        print("\nexception raised while stopping the robot from GUI")     # print to the terminal 
-        pass
+    if not send_to_robot("[stop]"):                     # attempt to send the stop command to the robot
+        print("\nexception raised while stopping the robot from GUI")     # print to the terminal
 #     print("\n====================================================================================")
     gui_robot_btn_update()                              # updates the cube related buttons status
 
@@ -1355,10 +1357,10 @@ def cube_read_solve():
                     cube_defstr = cube_defstr+"\n"            # cube status string in completed by '\n'
                     redraw(cube_defstr)                       # cube sketch on screen is updated to cube status string
                     draw_cubotino_center_colors()             # draw the cube center facelets with related colors
-            except:
+            except Exception as e:                    # case the webcam reading or the colors analysis fails
+                print(f"webcam cube status not defined: {e!r}")
                 if debug:
                     show_text(" Cube status not defined")     # cube status undefined is printed on the text window
-                pass
 
         elif "screen" in var:                                 # case the screen sketch is selected on the radiobuttons
             if gui_scramble_var.get():                        # case the scramble check box is checked
@@ -1371,9 +1373,8 @@ def cube_read_solve():
                     
             try:
                 cube_defstr = get_definition_string()+"\n"    # cube status string is returned from the sketch on screen
-            except:
+            except KeyError:                                  # case a facelet color isn't a center color
                 show_text(" Cube status not defined")         # cube status undefined is printed on the text window
-                pass
 
         elif "robot" in var:                     # case the robot is selected on the radiobuttons
             empty()                              # empties the cube sketch on screen
@@ -1420,7 +1421,7 @@ def progress_update(received):
             if percent=="100":                            # case the solving percentage has reached 100
                 gui_prog_bar["value"]='0'                 # progress bar is set to zero
                 gui_prog_label_text.set("")               # progress label is set empty
-        except:
+        except tk.TclError:
             pass
     
         animate_cube_sketch(move_index)  # cube facelets sketch updates according to the robot move in execution
@@ -1646,7 +1647,7 @@ def update_coms():
     coms.insert(0, "-")                             # first position on drop down menu is not a serial port
     try:
         b_drop_COM.destroy()                        # previous drop down menu is destroyed
-    except:
+    except NameError:                               # case there is no previous drop down menu
         pass
     clicked_com = tk.StringVar()                    # string variable used by tkinter for the selection
     clicked_com.set(coms[0])                        # activates first drop down menu position (not a serial port)
@@ -1676,7 +1677,7 @@ def connection():
             print("closing COM")                    # feedback print to the terminal
             ser.write(("[led_off]\n").encode())     # ESP32 blue led is set off
             ser.close()                             # serial port (at PC side) is closed
-        except:
+        except SERIAL_ERRORS:
             pass
         b_connect["text"] = "Connect"               # conection button label is changed to Connect
         b_refresh["state"] = "active"               # refresch com button is activated
@@ -1711,7 +1712,7 @@ def connection():
 #             print(ser)
             time.sleep(1)
 
-        except:
+        except (serial.SerialException, ValueError):      # case the port can't be opened, or a wrong setting
             text_info="check if ESP32 is connected to the IDE"        # text of possible connection fail reason
             print(text_info)                                          # print text of possible connection fail reason
             if (text_info not in gui_text_window.get(1.0, tk.END)):   # case the text_info is not displayed at GUI
@@ -1730,9 +1731,7 @@ def connection():
             if (text_info in gui_text_window.get(1.0, tk.END)):   # case the text_info is displayed at GUI
                 gui_text_window.delete(1.0, tk.END)               # clears GUI text window
                 
-            try:
-                ser.write(("[led_on]\n").encode())   # ESP32 blue led is set on (fix) 
-            except:                                  # case the first write attempt goes wrong
+            if not send_to_robot("[led_on]"):        # ESP32 blue led is set on (fix) 
                 print("could not write on ser")      # feedback print to the terminal
 
         b_settings["state"] = "active"               # settings button is activated
@@ -1875,7 +1874,7 @@ def close_window():
             print("closing COM")                   # feedback is printed to the terminal
             ser.write(("[led_off]\n").encode())    # ESP32 blue led is switched off
             ser.close()                            # serial port (at PC) is closed
-    except:
+    except SERIAL_ERRORS:
         pass
     serialData = False                             # boolean tracking serial comm conditions is set False
     root.destroy()                                 # GUI is closed
@@ -1887,40 +1886,22 @@ def close_window():
 
 # ######################## functions to test the servos positions  #####################################################
 def flip_cube():
-    try:
-        ser.write(("[test(flip)]\n").encode()) # send the flip_test request to the robot
-    except:
-        pass
+    send_to_robot("[test(flip)]")  # send the flip_test request to the robot
     
 def close_top_cover():
-    try:
-        ser.write(("[test(close)]\n").encode()) # send the close_cover settings request to the robot
-    except:
-        pass
+    send_to_robot("[test(close)]")  # send the close_cover settings request to the robot
 
 def open_top_cover():
-    try:
-        ser.write(("[test(open)]\n").encode()) # send the open_cover settings request to the robot
-    except:
-        pass
+    send_to_robot("[test(open)]")  # send the open_cover settings request to the robot
 
 def ccw():
-    try:
-        ser.write(("[test(ccw)]\n").encode()) # send the spin/rotate to CCW request to the robot
-    except:
-        pass
+    send_to_robot("[test(ccw)]")  # send the spin/rotate to CCW request to the robot
     
 def home():
-    try:
-        ser.write(("[test(home)]\n").encode()) # send the spin/rotate to HOME request to the robot
-    except:
-        pass
+    send_to_robot("[test(home)]")  # send the spin/rotate to HOME request to the robot
 
 def cw():
-    try:
-        ser.write(("[test(cw)]\n").encode()) # send the spin/rotate to CW request to the robot
-    except:
-        pass
+    send_to_robot("[test(cw)]")  # send the spin/rotate to CW request to the robot
 
 
 
@@ -1930,10 +1911,7 @@ def cw():
 def get_current_servo_settings():
     """Request robot to send the current servos settings."""
         
-    try:
-        ser.write(("[current_settings]\n").encode())      # send the request to the robot for current servos settings
-    except:
-        pass
+    send_to_robot("[current_settings]")       # send the request to the robot for current servos settings
 
 
 
@@ -1949,11 +1927,8 @@ def send_new_servo_settings():
     data=str(robot_settings)                               # tuple with servos settings is changed in string
     data=data.replace(" ","")                              # eventual empty spaces are removed from the data string
     print(f'\nservos settings sent to the robot: {data}')  # feedback is print to the terminal, as tuning reference
-    try:
-        ser.write(("[new_settings"+data+"]\n").encode())   # send the new servos settings to the robot
+    if send_to_robot("[new_settings"+data+"]"):            # send the new servos settings to the robot
         write_backup_settings(data)                        # call to the function to save a backup file od the settings
-    except:
-        pass
 
 
 
@@ -2167,7 +2142,7 @@ def save_webcam():
             f.write(data)                                        # write the string and save/close the file
         print(f'\nsaving the webcam settings: {cam_settings}')   # feedback is printed to the terminal
 
-    except:
+    except OSError:
         print("Something is wrong with Cubotino_cam_settings.txt file")
 
     backup = timestamp + "_cam_backup_" + str(cam_settings)      # string with timestamp and string of webcam settings
@@ -2175,7 +2150,7 @@ def save_webcam():
         with open("Cubotino_cam_settings_backup.txt", "w") as f: # open the servos settings text backup file in read mode
             f.write(backup)                                      # data is on first line
         print("saved last settings to Cubotino_cam_settings_backup.txt file")
-    except:
+    except OSError:
         print("Something went wrong while saving Cubotino_cam_settings_backup.txt file")
      
         
@@ -2204,7 +2179,7 @@ root = tk.Tk()                                     # initialize tkinter as root
 root.title("CUBOTino: Rubik's cube solver robot")  # name is assigned to GUI root
 try:
     root.iconbitmap("Rubiks-cube.ico")             # custom icon is assigned to GUI root
-except:
+except tk.TclError:                                # case the icon format isn't supported (i.e. on macOS)
     pass
 
 

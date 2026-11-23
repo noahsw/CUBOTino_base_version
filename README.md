@@ -20,6 +20,9 @@ Very high level notes:<br />
 - For the rotating base (cube_holder) the servo must have at least 190deg rotation; If not check the instruction on how to proceed.<br />
 - If you use macOS or Ubuntu, update RubikTwoPhase solver to latest version (v1.1.1, released on 16th Nov. 2022).<br /><br />
 
+# Installing the PC software:
+The GUI (PC_files/Cubotino_GUI.py) needs Python 3 with Tkinter, plus a few packages: from the repository folder, `python3 -m pip install -r requirements.txt` <br /><br />
+
 
 # How to present the cube to the webcam:
 Video tutorial explaining how to present the cube to the webcam: https://youtu.be/udr6tryxA_Y.<br />
